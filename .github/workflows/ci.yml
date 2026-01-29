@@ -130,6 +130,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Checkout hevm (custom)
+        run: |
+          if [ ! -d ../hevm ]; then
+            git clone --depth 1 https://github.com/r0bert-ethack/hevm_custom.git ../hevm
+          fi
+
       - name: Cache Local
         uses: actions/cache@v5
         with:
