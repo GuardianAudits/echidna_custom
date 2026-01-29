@@ -62,7 +62,7 @@ mergeCheatCallStats workerStates =
 
 formatCheatCallStats :: Map.Map FunctionSelector CheatCallStats -> [String]
 formatCheatCallStats stats =
-  map formatEntry $ sortBy (flip compare `on` (totalCalls . snd)) (Map.toList stats)
+  map formatEntry $ sortBy (flip compare `on` (\(_, st) -> st.totalCalls)) (Map.toList stats)
   where
     formatEntry (sel, st) =
       let total = st.totalCalls
@@ -74,7 +74,7 @@ formatCheatCallStats stats =
 
 formatCheatStatsSummary :: Map.Map FunctionSelector CheatCallStats -> String
 formatCheatStatsSummary stats =
-  case sortBy (flip compare `on` (totalCalls . snd)) (Map.toList stats) of
+  case sortBy (flip compare `on` (\(_, st) -> st.totalCalls)) (Map.toList stats) of
     [] -> ""
     (sel, st):rest ->
       let total = st.totalCalls
