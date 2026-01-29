@@ -69,7 +69,7 @@ formatCheatCallStats stats =
           ok = st.successCalls
           bad = st.failedCalls
           pct :: Double
-          pct = if total == 0 then 0 else (fromIntegral ok * 100 / fromIntegral total)
+          pct = if total == 0 then 0 else fromIntegral ok * 100 / fromIntegral total
       in show sel <> ": " <> show ok <> "/" <> show total <> " ok (" <> printf "%.1f%%" pct <> "), " <> show bad <> " failed"
 
 formatCheatStatsSummary :: Map.Map FunctionSelector CheatCallStats -> String
@@ -80,7 +80,7 @@ formatCheatStatsSummary stats =
       let total = st.totalCalls
           ok = st.successCalls
           pct :: Double
-          pct = if total == 0 then 0 else (fromIntegral ok * 100 / fromIntegral total)
+          pct = if total == 0 then 0 else fromIntegral ok * 100 / fromIntegral total
           more = if null rest then "" else " +" <> show (length rest)
       in "tracked: " <> show sel <> " " <> show ok <> "/" <> show total <> " (" <> printf "%.1f%%" pct <> ")" <> more
 
