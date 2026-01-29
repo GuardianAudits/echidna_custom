@@ -39,9 +39,17 @@ jobs:
             name: macOS (aarch64)
             tuple: aarch64-macos
             system: aarch64-darwin
+    env:
+      HEVM_SRC: ${{ github.workspace }}/hevm
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Checkout hevm (custom)
+        uses: actions/checkout@v6
+        with:
+          repository: r0bert-ethack/hevm_custom
+          path: hevm
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v21
@@ -67,11 +75,11 @@ jobs:
 
       - name: Build dynamic echidna
         run: |
-          nix build .#echidna
+          nix build .#echidna --impure
 
       - name: Build redistributable echidna
         run: |
-          nix build ".#packages.${NIX_SYSTEM}.echidna-redistributable" --out-link redistributable
+          nix build ".#packages.${NIX_SYSTEM}.echidna-redistributable" --out-link redistributable --impure
           tar -czf "echidna-${{ steps.version.outputs.version }}-${{ matrix.tuple }}.tar.gz" -C ./redistributable/bin/ echidna
         env:
           NIX_SYSTEM: ${{ matrix.system }}
