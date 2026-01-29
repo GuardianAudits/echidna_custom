@@ -68,7 +68,7 @@ verifyMethod method contract vm = do
   session <- asks (.fetchSession)
   pushWorkerEvent $ SymExecLog ("Verifying " <> (show method.name))
 
-  liftIO $ flip runReaderT runtimeEnv $ withSolvers conf.campaignConf.symExecSMTSolver (fromIntegral conf.campaignConf.symExecNSolvers) 1 timeoutSMT $ \solvers -> do
+  liftIO $ flip runReaderT runtimeEnv $ withSolvers conf.campaignConf.symExecSMTSolver (fromIntegral conf.campaignConf.symExecNSolvers) timeoutSMT 1 $ \solvers -> do
     threadId <- liftIO $ forkIO $ flip runReaderT runtimeEnv $ do
       (res, partials) <- exploreMethod method contract dappInfo.sources vm defaultSender conf veriOpts solvers rpcInfo session
       liftIO $ putMVar resultChan (res, partials)
