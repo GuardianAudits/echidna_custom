@@ -1,11 +1,13 @@
 module Echidna.Types.Campaign where
 
 import Control.Concurrent (ThreadId)
+import Data.Map (Map)
 import Data.Text (Text)
 import Data.Word (Word8, Word16)
 import GHC.Conc (numCapabilities)
 
 import EVM.Solvers (Solver(..))
+import EVM.Types (FunctionSelector, CheatCallStats)
 
 import Echidna.ABI (GenDict, emptyDict)
 import Echidna.Types
@@ -83,6 +85,8 @@ data WorkerState = WorkerState
     -- ^ Number of calls executed while fuzzing
   , totalGas    :: !Int
     -- ^ Total gas consumed while fuzzing
+  , cheatCallStats :: Map FunctionSelector CheatCallStats
+    -- ^ Tracked selector call stats from HEVM cheatcodes
   , runningThreads :: [ThreadId]
     -- ^ Extra threads currently being run,
     --   aside from the main worker thread
@@ -96,6 +100,7 @@ initialWorkerState =
               , ncallseqs = 0
               , ncalls = 0
               , totalGas = 0
+              , cheatCallStats = mempty
               , runningThreads = []
               }
 

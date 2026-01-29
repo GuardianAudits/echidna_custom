@@ -400,6 +400,7 @@ statusLine env states lastUpdateRef = do
   now <- getTimestamp
   let totalCalls = sum ((.ncalls) <$> states)
   let totalGas = sum ((.totalGas) <$> states)
+  let cheatStatsSummary = formatCheatStatsSummary (mergeCheatCallStats states)
 
   -- Calculate delta-based gas/s
   gasTracker <- readIORef lastUpdateRef
@@ -426,4 +427,5 @@ statusLine env states lastUpdateRef = do
     <> ", cov: " <> show points
     <> ", corpus: " <> show (Corpus.corpusSize corpus)
     <> shrinkingPart
+    <> (if null cheatStatsSummary then "" else ", " <> cheatStatsSummary)
     <> ", gas/s: " <> show gasPerSecond

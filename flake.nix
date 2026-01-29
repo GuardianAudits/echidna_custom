@@ -26,7 +26,15 @@
             foundry.overlay
             (final: prev: {
               # build with GHC 9.8
-              haskellPackages = prev.haskell.packages.ghc98;
+              haskellPackages = prev.haskell.packages.ghc98.override {
+                overrides = hself: hsuper: {
+                  # TLS test suite is flaky on macOS; disable to unblock builds
+                  tls = final.haskell.lib.dontCheck hsuper.tls;
+                  http-client-tls = final.haskell.lib.dontCheck hsuper.http-client-tls;
+                  http2 = final.haskell.lib.dontCheck hsuper.http2;
+                  warp = final.haskell.lib.dontCheck hsuper.warp;
+                };
+              };
             })
           ];
         };
@@ -58,13 +66,17 @@
           (lib.getLib numactl)
         ];
 
-        hevm = pkgs: pkgs.lib.pipe 
-          (pkgs.haskellPackages.callCabal2nix "hevm" (pkgs.fetchFromGitHub {
-            owner = "argotorg";
-            repo = "hevm";
-            rev = "release/0.57.0";
-            sha256 = "sha256-Fn/u6u5euZ+khabqdOw7N29le29XCnxbOdSZOit+XXk=";
-          }) { secp256k1 = pkgs.secp256k1; })
+        hevmSrcEnv = builtins.getEnv "HEVM_SRC";
+        hevmSrcLocal =
+          if hevmSrcEnv != "" then
+            builtins.path { path = hevmSrcEnv; name = "hevm-src"; }
+          else if builtins.pathExists ./hevm then
+            builtins.path { path = ./hevm; name = "hevm-src"; }
+          else
+            builtins.throw "HEVM_SRC not set and ./hevm not found. Set HEVM_SRC or place hevm repo at echidna/hevm.";
+
+        hevm = pkgs: pkgs.lib.pipe
+          (pkgs.haskellPackages.callCabal2nix "hevm" hevmSrcLocal { secp256k1 = pkgs.secp256k1; })
           ([
             pkgs.haskell.lib.compose.dontCheck
           ]);

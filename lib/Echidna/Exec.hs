@@ -181,6 +181,7 @@ execTxWith executeTx tx = do
       calldataBeforeVMReset <- gets (.state.calldata)
       callvalueBeforeVMReset <- gets (.state.callvalue)
       burnedGas <- gets (.burned)
+      cheatStatsBeforeVMReset <- gets (.cheatCallStats)
       -- If a transaction reverts reset VM to state before the transaction.
       put vmBeforeTx
       -- Undo reset of some of the VM state.
@@ -192,6 +193,7 @@ execTxWith executeTx tx = do
       #traces .= tracesBeforeVMReset
       #state % #codeContract .= codeContractBeforeVMReset
       #burned .= burnedGas
+      #cheatCallStats .= cheatStatsBeforeVMReset
     (VMFailure x, _) -> do
       dapp <- asks (.dapp)
       vm <- get
