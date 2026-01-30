@@ -10,6 +10,7 @@ import EVM.Solvers (Solver(..))
 import EVM.Types (FunctionSelector, CheatCallStats)
 
 import Echidna.ABI (GenDict, emptyDict)
+import Echidna.LogicalCoverage.Types (LogicalCoverage, emptyLogicalCoverage)
 import Echidna.Types
 import Echidna.Types.Coverage (CoverageFileType, CoverageMap)
 
@@ -69,6 +70,16 @@ data CampaignConf = CampaignConf
   , symExecMaxExplore :: Integer
     -- ^ Maximum number of states to explore before we stop exploring it.
     -- Only relevant if symExec is True
+  , logicalCoverage :: Bool
+    -- ^ Whether to collect logical coverage statistics
+  , logicalCoverageTopN :: Int
+    -- ^ Number of methods to show in logical coverage summaries
+  , logicalCoverageMaxReasons :: Int
+    -- ^ Maximum number of revert reasons stored per method
+  , logicalCoverageMaxSamples :: Int
+    -- ^ Maximum number of samples for future expansions
+  , logicalCoverageMaxDepth :: Int
+    -- ^ Maximum depth for nested types in future expansions
   }
 
 -- | The state of a fuzzing campaign.
@@ -87,6 +98,8 @@ data WorkerState = WorkerState
     -- ^ Total gas consumed while fuzzing
   , cheatCallStats :: Map FunctionSelector CheatCallStats
     -- ^ Tracked selector call stats from HEVM cheatcodes
+  , logicalCoverage :: !LogicalCoverage
+    -- ^ Logical coverage statistics
   , runningThreads :: [ThreadId]
     -- ^ Extra threads currently being run,
     --   aside from the main worker thread
@@ -101,6 +114,7 @@ initialWorkerState =
               , ncalls = 0
               , totalGas = 0
               , cheatCallStats = mempty
+              , logicalCoverage = emptyLogicalCoverage
               , runningThreads = []
               }
 
@@ -129,6 +143,18 @@ defaultSymExecMaxIters = 5
 -- (https://github.com/argotorg/hevm/pull/252)
 defaultSymExecAskSMTIters :: Integer
 defaultSymExecAskSMTIters = 1
+
+defaultLogicalCoverageTopN :: Int
+defaultLogicalCoverageTopN = 10
+
+defaultLogicalCoverageMaxReasons :: Int
+defaultLogicalCoverageMaxReasons = 10
+
+defaultLogicalCoverageMaxSamples :: Int
+defaultLogicalCoverageMaxSamples = 20
+
+defaultLogicalCoverageMaxDepth :: Int
+defaultLogicalCoverageMaxDepth = 2
 
 -- | Get number of fuzzing workers (doesn't include sym exec worker)
 -- Defaults to `N` if set to Nothing, where `N` is Haskell's -N value,

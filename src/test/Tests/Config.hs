@@ -42,7 +42,13 @@ configTests = testGroup "Configuration tests" $
   , testCase "default.yaml" $ do
       EConfigWithUsage _ bad unset <- parseConfig "basic/default.yaml"
       assertBool ("unused options: " ++ show bad) $ null bad
-      let unset' = unset & sans "seed"
+      let unset' = unset
+            & sans "seed"
+            & sans "logicalCoverage"
+            & sans "logicalCoverageTopN"
+            & sans "logicalCoverageMaxReasons"
+            & sans "logicalCoverageMaxSamples"
+            & sans "logicalCoverageMaxDepth"
       assertBool ("unset options: " ++ show unset') $ null unset'
   , testCase "W256 decoding" $ do
       let maxW256  = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"

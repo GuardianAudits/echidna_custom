@@ -37,6 +37,7 @@ import EVM.Types hiding (Env, Frame(state), Gas)
 import Echidna.ABI
 import Echidna.Events (extractEventValues)
 import Echidna.Exec
+import Echidna.LogicalCoverage (emptyLogicalCoverage, updateLogicalCoverage)
 import Echidna.Mutator.Corpus
 import Echidna.Shrink (shrinkTest)
 import Echidna.Solidity (chooseContract)
@@ -144,6 +145,7 @@ runSymWorker callback vm dict workerId _ name = do
                 , ncalls = 0
                 , totalGas = 0
                 , cheatCallStats = mempty
+                , logicalCoverage = emptyLogicalCoverage
                 , runningThreads = []
                 }
 
@@ -343,6 +345,7 @@ runFuzzWorker callback vm dict workerId initialCorpus testLimit = do
                   , ncalls = 0
                   , totalGas = 0
                   , cheatCallStats = mempty
+                  , logicalCoverage = emptyLogicalCoverage
                   , runningThreads = []
                   }
 
@@ -596,6 +599,11 @@ evalSeq vm0 execFunc = go vm0 [] where
       [] -> pure ([], vm)
       (tx:remainingTxs) -> do
         (result, vm') <- execFunc vm tx
+        enabled <- asks (.cfg.campaignConf.logicalCoverage)
+        when enabled $ do
+          maxReasons <- asks (.cfg.campaignConf.logicalCoverageMaxReasons)
+          updated <- updateLogicalCoverage maxReasons vm' tx result =<< gets (.logicalCoverage)
+          modify' $ \workerState -> workerState { logicalCoverage = updated }
         modify' $ \workerState -> workerState
           { totalGas = workerState.totalGas + fromIntegral (vm'.burned - vm.burned)
           , cheatCallStats = vm'.cheatCallStats

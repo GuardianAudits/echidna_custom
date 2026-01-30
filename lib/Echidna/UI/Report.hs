@@ -2,31 +2,29 @@ module Echidna.UI.Report where
 
 import Control.Monad (forM)
 import Control.Monad.Reader (MonadReader, MonadIO (liftIO), asks, ask)
-import Data.IORef (readIORef, atomicModifyIORef')
+import Data.IORef (readIORef)
 import Data.Function (on)
 import Data.List (nub, sortBy)
 import Data.Map qualified as Map
-import Data.Maybe (catMaybes, fromJust, fromMaybe)
-import Data.Text (Text, unpack)
+import Data.Maybe (catMaybes, fromJust)
+import Data.Text (unpack)
 import Data.Text qualified as T
 import Data.Time (LocalTime)
 import Text.Printf (printf)
-import Optics
 
-import EVM.Format (showTraceTree, contractNamePart)
-import EVM.Solidity (SolcContract(..))
-import EVM.Types (W256, VM(labels), VMType(Concrete), Addr, Expr (LitAddr), Contract(..), FunctionSelector, CheatCallStats(..))
+import EVM.Format (showTraceTree)
+import EVM.Types (W256, VM(labels), VMType(Concrete), FunctionSelector, CheatCallStats(..))
 
-import Echidna.ABI (GenDict(..), encodeSig)
+import Echidna.ABI (encodeSig)
+import Echidna.ContractName (contractNameForAddr)
+import Echidna.LogicalCoverage (mergeLogicalCoverage, formatLogicalCoverageReport)
 import Echidna.Pretty (ppTxCall)
-import Echidna.SourceMapping (findSrcByMetadata, lookupCodehash)
-import Echidna.SymExec.Symbolic (forceWord)
 import Echidna.Types.Campaign
 import Echidna.Types.Config
 import Echidna.Types.Corpus (corpusSize)
 import Echidna.Types.Coverage (coverageStats)
 import Echidna.Types.Test (EchidnaTest(..), TestState(..), TestType(..))
-import Echidna.Types.Tx (Tx(..), TxCall(..), TxConf(..))
+import Echidna.Types.Tx (Tx(..), TxCall(..))
 import Echidna.Types.Worker
 import Echidna.Utility (timePrefix)
 import Echidna.Worker
@@ -104,6 +102,7 @@ ppCampaign workerStates = do
   corpusPrinted <- ppCorpus
   let callsPrinted = ppTotalCalls workerStates
   let cheatStatsPrinted = ppCheatCallStats workerStates
+  logicalCoveragePrinted <- ppLogicalCoverage workerStates
   pure $ unlines
     [ testsPrinted
     , coveragePrinted
@@ -111,7 +110,17 @@ ppCampaign workerStates = do
     , seedPrinted
     , callsPrinted
     , cheatStatsPrinted
+    , logicalCoveragePrinted
     ]
+
+ppLogicalCoverage :: (MonadIO m, MonadReader Env m) => [WorkerState] -> m String
+ppLogicalCoverage workerStates = do
+  conf <- asks (.cfg.campaignConf)
+  if not conf.logicalCoverage then
+    pure "Logical coverage: disabled"
+  else do
+    let merged = mergeLogicalCoverage conf.logicalCoverageMaxReasons (map (.logicalCoverage) workerStates)
+    pure $ unlines (formatLogicalCoverageReport conf.logicalCoverageTopN merged)
 
 -- | Given rules for pretty-printing associated addresses, and whether to print
 -- them, pretty-print a 'Transaction'.
@@ -138,31 +147,6 @@ ppTx vm printName tx = do
     label addr = case Map.lookup addr vm.labels of
       Nothing -> ""
       Just l -> " «" <> T.unpack l <> "»"
-
-contractNameForAddr :: (MonadReader Env m, MonadIO m) => VM Concrete -> Addr -> m Text
-contractNameForAddr vm addr = do
-  case Map.lookup (LitAddr addr) (vm ^. #env % #contracts) of
-    Just contract -> do
-      -- Figure out contract compile-time codehash
-      codehashMap <- asks (.codehashMap)
-      dapp <- asks (.dapp)
-      let codehash = forceWord contract.codehash
-      compileTimeCodehash <- liftIO $ lookupCodehash codehashMap codehash contract dapp
-      -- See if we know the name
-      cache <- asks (.contractNameCache)
-      nameMap <- liftIO $ readIORef cache
-      case Map.lookup compileTimeCodehash nameMap of
-        Just name -> pure name
-        Nothing -> do
-          -- Cache miss, compute and store the name
-          let maybeName = case findSrcByMetadata contract dapp of
-                Just solcContract -> Just $ contractNamePart solcContract.contractName
-                Nothing -> Nothing
-              finalName = fromMaybe (T.pack $ show addr) maybeName
-          -- Store in cache using compile-time codehash as key
-          liftIO $ atomicModifyIORef' cache $ \m -> (Map.insert compileTimeCodehash finalName m, ())
-          pure finalName
-    Nothing -> pure $ T.pack $ show addr
 
 ppDelay :: (W256, W256) -> [Char]
 ppDelay (time, block) =

@@ -111,6 +111,11 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "symExecMaxIters"    ..!= defaultSymExecMaxIters
         <*> v ..:? "symExecAskSMTIters" ..!= defaultSymExecAskSMTIters
         <*> v ..:? "symExecMaxExplore"  ..!= defaultSymExecMaxExplore
+        <*> v ..:? "logicalCoverage" ..!= True
+        <*> v ..:? "logicalCoverageTopN" ..!= defaultLogicalCoverageTopN
+        <*> v ..:? "logicalCoverageMaxReasons" ..!= defaultLogicalCoverageMaxReasons
+        <*> v ..:? "logicalCoverageMaxSamples" ..!= defaultLogicalCoverageMaxSamples
+        <*> v ..:? "logicalCoverageMaxDepth" ..!= defaultLogicalCoverageMaxDepth
         where
         smtSolver = v ..:? "symExecSMTSolver" >>= \case
           Just ("z3" :: String)  -> pure Z3

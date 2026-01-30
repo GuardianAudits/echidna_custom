@@ -36,6 +36,7 @@ import Echidna.ABI
 import Echidna.Campaign (runWorker, spawnListener)
 import Echidna.Output.Corpus (saveCorpusEvent)
 import Echidna.Output.JSON qualified
+import Echidna.LogicalCoverage (mergeLogicalCoverage, formatLogicalStatus)
 import Echidna.Server (runSSEServer)
 import Echidna.SourceAnalysis.Slither (isEmptySlitherInfo)
 import Echidna.Types.Campaign
@@ -401,6 +402,11 @@ statusLine env states lastUpdateRef = do
   let totalCalls = sum ((.ncalls) <$> states)
   let totalGas = sum ((.totalGas) <$> states)
   let cheatStatsSummary = formatCheatStatsSummary (mergeCheatCallStats states)
+  let logicalCoverageSummary =
+        if env.cfg.campaignConf.logicalCoverage
+          then formatLogicalStatus
+                 (mergeLogicalCoverage env.cfg.campaignConf.logicalCoverageMaxReasons (map (.logicalCoverage) states))
+          else ""
 
   -- Calculate delta-based gas/s
   gasTracker <- readIORef lastUpdateRef
@@ -428,4 +434,5 @@ statusLine env states lastUpdateRef = do
     <> ", corpus: " <> show (Corpus.corpusSize corpus)
     <> shrinkingPart
     <> (if null cheatStatsSummary then "" else ", " <> cheatStatsSummary)
+    <> (if null logicalCoverageSummary then "" else ", " <> logicalCoverageSummary)
     <> ", gas/s: " <> show gasPerSecond

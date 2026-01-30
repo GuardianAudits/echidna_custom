@@ -1,6 +1,11 @@
 name: "Nix and release"
 on:
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create a draft release even if not running on a tag"
+        type: boolean
+        default: false
 
 jobs:
   nixBuild:
@@ -19,12 +24,7 @@ jobs:
             tuple: x86_64-linux
             system: x86_64-linux
             timeout: 180
-          - os: ubuntu-24.04-arm
-            name: Linux (aarch64)
-            tuple: aarch64-linux
-            system: aarch64-linux
-            timeout: 180
-          - os: macos-14
+          - os: macos-13
             name: macOS (x86_64)
             tuple: x86_64-macos
             system: x86_64-darwin
@@ -49,6 +49,7 @@ jobs:
 
       - name: Configure Cachix
         uses: cachix/cachix-action@v16
+        if: ${{ secrets.CACHIX_AUTH_TOKEN != '' }}
         with:
           name: trailofbits
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -87,7 +88,7 @@ jobs:
     name: Create release
     timeout-minutes: 10
     needs: [nixBuild]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -107,9 +108,20 @@ jobs:
         with:
           inputs: ./echidna-*.tar.gz
 
+      - name: Set release tag
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=manual-${{ needs.nixBuild.outputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub release and upload binaries
         uses: softprops/action-gh-release@v2.5.0
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           draft: true
           name: "Echidna ${{ needs.nixBuild.outputs.version }}"
           files: |

@@ -5,6 +5,7 @@ module Main where
 import Control.Monad (unless, when, forM_)
 import Control.Monad.Random (getRandomR)
 import Control.Monad.Reader (runReaderT, liftIO)
+import Data.ByteString.Lazy qualified as LBS
 import Data.Aeson.Key qualified as Aeson.Key
 import Data.Char (toLower)
 import Data.Function ((&))
@@ -36,6 +37,7 @@ import EVM.Types (Addr)
 import Echidna
 import Echidna.Campaign (isSuccessful)
 import Echidna.Config
+import Echidna.LogicalCoverage (mergeLogicalCoverage, logicalCoverageToJSON)
 import Echidna.Onchain qualified as Onchain
 import Echidna.Output.Corpus
 import Echidna.Output.Foundry
@@ -69,7 +71,7 @@ main = withUtf8 $ withCP65001 $ do
 
   initialCorpus <- loadInitialCorpus env
   -- start ui and run tests
-  _campaign <- runReaderT (ui vm dict initialCorpus cliSelectedContract) env
+  campaignStates <- runReaderT (ui vm dict initialCorpus cliSelectedContract) env
 
   tests <- traverse readIORef env.testRefs
 
@@ -123,6 +125,13 @@ main = withUtf8 $ withCP65001 $ do
       let contracts = Map.elems env.dapp.solcByName
       saveCoverages env runId dir buildOutput.sources contracts
 
+  -- save logical coverage report
+  when cfg.campaignConf.logicalCoverage $ do
+    let merged = mergeLogicalCoverage cfg.campaignConf.logicalCoverageMaxReasons (map (.logicalCoverage) campaignStates)
+    let outputDir = fromMaybe "." cfg.campaignConf.corpusDir
+    liftIO $ createDirectoryIfMissing True outputDir
+    liftIO $ LBS.writeFile (outputDir </> "logical_coverage.json") (logicalCoverageToJSON merged)
+
   if isSuccessful tests then exitSuccess else exitWith (ExitFailure 1)
 
 data Options = Options
@@ -134,6 +143,11 @@ data Options = Options
   , cliOutputFormat     :: Maybe OutputFormat
   , cliCorpusDir        :: Maybe FilePath
   , cliCoverageDir      :: Maybe FilePath
+  , cliLogicalCoverage  :: Maybe Bool
+  , cliLogicalCoverageTopN :: Maybe Int
+  , cliLogicalCoverageMaxReasons :: Maybe Int
+  , cliLogicalCoverageMaxSamples :: Maybe Int
+  , cliLogicalCoverageMaxDepth :: Maybe Int
   , cliTestMode         :: Maybe TestMode
   , cliAllContracts     :: Bool
   , cliTimeout          :: Maybe Int
@@ -192,6 +206,21 @@ options = Options . NE.fromList
   <*> optional (option str $ long "coverage-dir"
     <> metavar "PATH"
     <> help "Directory to save coverage reports. Defaults to corpus-dir if not specified.")
+  <*> optional (option bool $ long "logical-coverage"
+    <> metavar "BOOL"
+    <> help "Enable logical coverage reporting (default: true).")
+  <*> optional (option auto $ long "logical-coverage-topn"
+    <> metavar "N"
+    <> help "Number of methods to show in logical coverage summary.")
+  <*> optional (option auto $ long "logical-coverage-max-reasons"
+    <> metavar "N"
+    <> help "Maximum number of revert reasons stored per method.")
+  <*> optional (option auto $ long "logical-coverage-max-samples"
+    <> metavar "N"
+    <> help "Maximum number of samples stored for future expansions.")
+  <*> optional (option auto $ long "logical-coverage-max-depth"
+    <> metavar "N"
+    <> help "Maximum depth for nested types in future expansions.")
   <*> optional (option str $ long "test-mode"
     <> help "Test mode to use. Either 'property', 'assertion', 'dapptest', 'optimization', 'overflow' or 'exploration'" )
   <*> switch (long "all-contracts"
@@ -295,6 +324,11 @@ overrideConfig config Options{..} = do
       , symExecTargets = if null cliSymExecTargets then campaignConf.symExecTargets else cliSymExecTargets
       , symExecTimeout = fromMaybe campaignConf.symExecTimeout cliSymExecTimeout
       , symExecNSolvers = fromMaybe campaignConf.symExecNSolvers cliSymExecNSolvers
+      , logicalCoverage = fromMaybe campaignConf.logicalCoverage cliLogicalCoverage
+      , logicalCoverageTopN = fromMaybe campaignConf.logicalCoverageTopN cliLogicalCoverageTopN
+      , logicalCoverageMaxReasons = fromMaybe campaignConf.logicalCoverageMaxReasons cliLogicalCoverageMaxReasons
+      , logicalCoverageMaxSamples = fromMaybe campaignConf.logicalCoverageMaxSamples cliLogicalCoverageMaxSamples
+      , logicalCoverageMaxDepth = fromMaybe campaignConf.logicalCoverageMaxDepth cliLogicalCoverageMaxDepth
       }
 
     overrideSolConf solConf = solConf
