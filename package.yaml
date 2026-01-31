@@ -88,6 +88,7 @@ executables:
     main: Main.hs
     source-dirs: src/
     dependencies:
+      - bytestring
       - code-page
       - echidna
       - filepath
