@@ -586,9 +586,9 @@ execTxOptC vm tx = do
 evalSeq
   :: (MonadIO m, MonadThrow m, MonadRandom m, MonadReader Env m, MonadState WorkerState m)
   => VM Concrete -- ^ Initial VM
-  -> (VM Concrete -> Tx -> m (result, VM Concrete))
+  -> (VM Concrete -> Tx -> m (VMResult Concrete, VM Concrete))
   -> [Tx]
-  -> m ([(Tx, result)], VM Concrete)
+  -> m ([(Tx, VMResult Concrete)], VM Concrete)
 evalSeq vm0 execFunc = go vm0 [] where
   go vm executedSoFar toExecute = do
     -- NOTE: we do reverse here because we build up this list by prepending,
