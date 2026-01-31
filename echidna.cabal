@@ -1,0 +1,242 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.38.2.
+--
+-- see: https://github.com/sol/hpack
+
+name:           echidna
+version:        2.3.1
+author:         Trail of Bits <echidna-dev@trailofbits.com>
+maintainer:     Trail of Bits <echidna-dev@trailofbits.com>
+license:        AGPL-3
+license-file:   LICENSE
+build-type:     Simple
+
+flag static
+  description: Pass -static to ghc when linking the stack binary.
+  manual: True
+  default: False
+
+library
+  exposed-modules:
+      Echidna
+      Echidna.ABI
+      Echidna.Campaign
+      Echidna.Config
+      Echidna.ContractName
+      Echidna.Deploy
+      Echidna.Events
+      Echidna.Exec
+      Echidna.LogicalCoverage
+      Echidna.LogicalCoverage.Types
+      Echidna.Mutator.Array
+      Echidna.Mutator.Corpus
+      Echidna.Onchain
+      Echidna.Onchain.Etherscan
+      Echidna.Onchain.Sourcify
+      Echidna.Onchain.Types
+      Echidna.Orphans.JSON
+      Echidna.Output.Corpus
+      Echidna.Output.Foundry
+      Echidna.Output.JSON
+      Echidna.Output.Source
+      Echidna.Pretty
+      Echidna.Server
+      Echidna.Shrink
+      Echidna.Solidity
+      Echidna.SourceAnalysis.Slither
+      Echidna.SourceMapping
+      Echidna.SymExec.Common
+      Echidna.SymExec.Exploration
+      Echidna.SymExec.Symbolic
+      Echidna.SymExec.Verification
+      Echidna.Test
+      Echidna.Transaction
+      Echidna.Types
+      Echidna.Types.Cache
+      Echidna.Types.Campaign
+      Echidna.Types.Config
+      Echidna.Types.Corpus
+      Echidna.Types.Coverage
+      Echidna.Types.Random
+      Echidna.Types.Signature
+      Echidna.Types.Solidity
+      Echidna.Types.Test
+      Echidna.Types.Tx
+      Echidna.Types.Worker
+      Echidna.Types.World
+      Echidna.UI
+      Echidna.UI.Report
+      Echidna.UI.Widgets
+      Echidna.Utility
+      Echidna.Worker
+  other-modules:
+      Paths_echidna
+  hs-source-dirs:
+      lib/
+  default-extensions:
+      DataKinds
+      DuplicateRecordFields
+      LambdaCase
+      MultiWayIf
+      NoFieldSelectors
+      OverloadedLabels
+      OverloadedRecordDot
+      OverloadedStrings
+  ghc-options: -O2 -Wall -fno-warn-orphans -feager-blackholing -optP-Wno-nonportable-include-path -fspecialize-aggressively -fexpose-all-unfoldings -Wunused-packages
+  build-depends:
+      Glob
+    , ListLike
+    , MonadRandom
+    , aeson
+    , ansi-terminal
+    , array
+    , base
+    , base16-bytestring
+    , binary
+    , brick
+    , bytestring
+    , containers
+    , data-bword
+    , data-dword
+    , deepseq
+    , directory
+    , exceptions
+    , extra
+    , filepath
+    , hashable
+    , hevm
+    , html-conduit
+    , html-entities
+    , http-conduit
+    , mtl
+    , mustache
+    , optics
+    , optics-core
+    , process
+    , random
+    , rosezipper
+    , semver
+    , signal
+    , split
+    , strip-ansi-escape
+    , text
+    , time
+    , unliftio
+    , unliftio-core
+    , utf8-string
+    , vector
+    , vty
+    , vty-crossplatform
+    , wai-extra
+    , warp
+    , word-wrap
+    , wreq
+    , xml-conduit
+    , yaml
+  default-language: GHC2021
+
+executable echidna
+  main-is: Main.hs
+  other-modules:
+      Paths_echidna
+  hs-source-dirs:
+      src/
+  default-extensions:
+      DataKinds
+      DuplicateRecordFields
+      LambdaCase
+      MultiWayIf
+      NoFieldSelectors
+      OverloadedLabels
+      OverloadedRecordDot
+      OverloadedStrings
+  ghc-options: -O2 -Wall -fno-warn-orphans -feager-blackholing -optP-Wno-nonportable-include-path -fspecialize-aggressively -fexpose-all-unfoldings -Wunused-packages -threaded -rtsopts "-with-rtsopts=-A64m -N"
+  build-depends:
+      MonadRandom
+    , aeson
+    , base
+    , code-page
+    , containers
+    , bytestring
+    , directory
+    , echidna
+    , filepath
+    , hashable
+    , hevm
+    , mtl
+    , optparse-applicative
+    , text
+    , time
+    , with-utf8
+  default-language: GHC2021
+  if (os(linux) || os(windows)) && flag(static)
+    ghc-options: -optl-static
+  if os(linux) || os(windows)
+    ghc-options: -O2 -optl-pthread
+  if os(darwin)
+    ghc-options: -fcompact-unwind
+    ld-options: -Wl,-keep_dwarf_unwind
+
+test-suite echidna-testsuite
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Common
+      Tests.ABIv2
+      Tests.Assertion
+      Tests.Cheat
+      Tests.Compile
+      Tests.Config
+      Tests.Coverage
+      Tests.Dapptest
+      Tests.Encoding
+      Tests.FoundryTestGen
+      Tests.Integration
+      Tests.Optimization
+      Tests.Overflow
+      Tests.Research
+      Tests.Seed
+      Tests.Symbolic
+      Tests.Values
+      Paths_echidna
+  hs-source-dirs:
+      src/test
+  default-extensions:
+      DataKinds
+      DuplicateRecordFields
+      LambdaCase
+      MultiWayIf
+      NoFieldSelectors
+      OverloadedLabels
+      OverloadedRecordDot
+      OverloadedStrings
+  ghc-options: -O2 -Wall -fno-warn-orphans -feager-blackholing -optP-Wno-nonportable-include-path -fspecialize-aggressively -fexpose-all-unfoldings -Wunused-packages
+  build-depends:
+      MonadRandom
+    , aeson
+    , base
+    , containers
+    , data-dword
+    , directory
+    , echidna
+    , exceptions
+    , hevm
+    , mtl
+    , optics-core
+    , process
+    , semver
+    , split
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
+    , text
+    , yaml
+  default-language: GHC2021
+  if (os(linux) || os(windows)) && flag(static)
+    ghc-options: -optl-static
+  if os(linux) || os(windows)
+    ghc-options: -O2 -optl-pthread
+  if os(darwin)
+    ghc-options: -fcompact-unwind
+    ld-options: -Wl,-keep_dwarf_unwind
