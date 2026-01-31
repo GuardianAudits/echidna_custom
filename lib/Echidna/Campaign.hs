@@ -603,9 +603,27 @@ evalSeq vm0 execFunc = go vm0 [] where
         when enabled $ do
           maxReasons <- asks (.cfg.campaignConf.logicalCoverageMaxReasons)
           updated <- updateLogicalCoverage maxReasons vm' tx result =<< gets (.logicalCoverage)
-          modify' $ \workerState ->
-            let ws = workerState :: WorkerState
-            in ws { logicalCoverage = updated }
+          modify' $ \WorkerState
+            { workerId
+            , genDict
+            , newCoverage
+            , ncallseqs
+            , ncalls
+            , totalGas
+            , cheatCallStats
+            , runningThreads
+            } ->
+              WorkerState
+                { workerId = workerId
+                , genDict = genDict
+                , newCoverage = newCoverage
+                , ncallseqs = ncallseqs
+                , ncalls = ncalls
+                , totalGas = totalGas
+                , cheatCallStats = cheatCallStats
+                , logicalCoverage = updated
+                , runningThreads = runningThreads
+                }
         modify' $ \workerState -> workerState
           { totalGas = workerState.totalGas + fromIntegral (vm'.burned - vm.burned)
           , cheatCallStats = vm'.cheatCallStats
