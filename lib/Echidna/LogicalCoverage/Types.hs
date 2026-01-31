@@ -103,8 +103,10 @@ emptyCallStats argCount =
 mergeLogicalCoverage :: Int -> [LogicalCoverage] -> LogicalCoverage
 mergeLogicalCoverage maxReasons coverages =
   LogicalCoverage $
-    Map.map (trimReasons maxReasons) $
-      Map.unionsWith mergeCallStats (map (.methods) coverages)
+    Map.map trimStats $
+      Map.unionsWith mergeCallStats (map (\(LogicalCoverage m) -> m) coverages)
+  where
+    trimStats cs = cs { revertReasons = trimReasons maxReasons cs.revertReasons }
 
 mergeCallStats :: CallStats -> CallStats -> CallStats
 mergeCallStats a b =

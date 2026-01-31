@@ -9,6 +9,7 @@ import Data.Text qualified as T
 import Optics
 
 import EVM.Format (contractNamePart)
+import EVM.Solidity (SolcContract(..))
 import EVM.Types (VM(..), VMType(Concrete), Addr, Expr (LitAddr), Contract(..))
 
 import Echidna.SourceMapping (findSrcByMetadata, lookupCodehash)
@@ -32,7 +33,9 @@ contractNameForAddr vm addr = do
         Nothing -> do
           -- Cache miss, compute and store the name
           let maybeName = case findSrcByMetadata contract dapp of
-                Just solcContract -> Just $ contractNamePart solcContract.contractName
+                Just solcContract ->
+                  let SolcContract { contractName = name } = solcContract
+                  in Just $ contractNamePart name
                 Nothing -> Nothing
               finalName = fromMaybe (T.pack $ show addr) maybeName
           -- Store in cache using compile-time codehash as key

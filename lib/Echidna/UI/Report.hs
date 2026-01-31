@@ -15,7 +15,7 @@ import Text.Printf (printf)
 import EVM.Format (showTraceTree)
 import EVM.Types (W256, VM(labels), VMType(Concrete), FunctionSelector, CheatCallStats(..))
 
-import Echidna.ABI (encodeSig)
+import Echidna.ABI (encodeSig, GenDict(..))
 import Echidna.ContractName (contractNameForAddr)
 import Echidna.LogicalCoverage (mergeLogicalCoverage, formatLogicalCoverageReport)
 import Echidna.Pretty (ppTxCall)
@@ -24,7 +24,7 @@ import Echidna.Types.Config
 import Echidna.Types.Corpus (corpusSize)
 import Echidna.Types.Coverage (coverageStats)
 import Echidna.Types.Test (EchidnaTest(..), TestState(..), TestType(..))
-import Echidna.Types.Tx (Tx(..), TxCall(..))
+import Echidna.Types.Tx (Tx(..), TxCall(..), TxConf(..))
 import Echidna.Types.Worker
 import Echidna.Utility (timePrefix)
 import Echidna.Worker
@@ -91,7 +91,7 @@ ppCheatCallStats workerStates =
 
 ppSeed :: [WorkerState] -> String
 ppSeed [] = "unknown" -- should not happen
-ppSeed (campaign:_) = show campaign.genDict.defSeed
+ppSeed (WorkerState { genDict = GenDict { defSeed = seed } } : _) = show seed
 
 ppCampaign :: (MonadIO m, MonadReader Env m) => [WorkerState] -> m String
 ppCampaign workerStates = do
@@ -132,7 +132,7 @@ ppTx vm printName tx = do
     SolCall _ -> Just <$> contractNameForAddr vm tx.dst
     _ -> pure Nothing
   names <- asks (.cfg.namesConf)
-  tGas  <- asks (.cfg.txConf.txGas)
+  tGas <- asks (\Env { cfg = EConfig { txConf = TxConf { txGas = gas } } } -> gas)
   pure $
     unpack (maybe "" (<> ".") contractName) <> ppTxCall vm.labels tx.call
     <> (if not printName then "" else prettyName names Sender tx.src <> prettyName names Receiver tx.dst)
