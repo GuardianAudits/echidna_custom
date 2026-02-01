@@ -98,6 +98,24 @@ Echidna was modified to **collect and display selector stats** for `doFunctionCa
 - **`lib/Echidna/UI.hs`**
   - Shows compact “tracked: …” in live status line
 
+### Logical coverage summary behavior (important)
+The **Logical coverage** section is **Top‑N only** and **sorted by total call count**, not by success rate.
+
+Defaults:
+- `logicalCoverageTopN = 10`
+- Only methods that were **actually called** are shown (never‑called methods don’t appear).
+
+If you have many handlers (e.g., 103), you’ll only see the **most‑called** methods in the summary.  
+To show all called methods, set `logicalCoverageTopN` higher via CLI or config:
+
+```bash
+./result/bin/echidna ... --logical-coverage-topn 200
+```
+
+```yaml
+logicalCoverageTopN: 200
+```
+
 **Example end‑of‑run output:**
 ```
 Tracked calls:
