@@ -227,5 +227,3 @@ coverageLineHits: true
 ```
 
 ---
-
-If you want further changes documented here, tell me what to add.
