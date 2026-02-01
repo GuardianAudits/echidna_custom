@@ -49,6 +49,7 @@ configTests = testGroup "Configuration tests" $
             & sans "logicalCoverageMaxReasons"
             & sans "logicalCoverageMaxSamples"
             & sans "logicalCoverageMaxDepth"
+            & sans "coverageLineHits"
       assertBool ("unset options: " ++ show unset') $ null unset'
   , testCase "W256 decoding" $ do
       let maxW256  = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"

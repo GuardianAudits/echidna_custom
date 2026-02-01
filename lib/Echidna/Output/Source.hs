@@ -11,6 +11,7 @@ import Data.List.NonEmpty qualified as NE
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe, catMaybes)
+import Data.Word (Word64)
 import Data.Sequence qualified as Seq
 import Data.Set qualified as S
 import Data.Text (Text, pack)
@@ -39,6 +40,18 @@ import Echidna.Types.Config (Env(..), EConfig(..))
 import Echidna.Types.Coverage (OpIx, unpackTxResults, FrozenCoverageMap, CoverageFileType (..), mergeCoverageMaps)
 import Echidna.Types.Tx (TxResult(..))
 
+data LineCov = LineCov
+  { hits :: Word64
+  , results :: [TxResult]
+  }
+
+mergeLineCov :: LineCov -> LineCov -> LineCov
+mergeLineCov a b =
+  LineCov
+    { hits = a.hits + b.hits
+    , results = a.results <> b.results
+    }
+
 -- | Embedded template with partials for coverage reports
 coverageTemplate :: Template
 coverageTemplate = $(embedTemplate ["lib/Echidna/Output/assets"] "coverage.mustache")
@@ -63,11 +76,13 @@ saveCoverages env seed d sc cs = do
   let fileTypes = env.cfg.campaignConf.coverageFormats
       coverageExcludes = env.cfg.campaignConf.coverageExcludes
       projectName = env.cfg.projectName
+      showHits = env.cfg.campaignConf.coverageLineHits
   coverage <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
-  mapM_ (\ty -> saveCoverage ty seed d sc cs coverage projectName coverageExcludes) fileTypes
+  mapM_ (\ty -> saveCoverage ty showHits seed d sc cs coverage projectName coverageExcludes) fileTypes
 
 saveCoverage
   :: CoverageFileType
+  -> Bool
   -> Int
   -> FilePath
   -> SourceCache
@@ -76,12 +91,12 @@ saveCoverage
   -> Maybe Text
   -> [Text]
   -> IO ()
-saveCoverage fileType seed d sc cs covMap projectName excludePatterns = do
+saveCoverage fileType showHits seed d sc cs covMap projectName excludePatterns = do
   let extension = coverageFileExtension fileType
       fn = d </> "covered." <> show seed <> extension
   currentTime <- getCurrentTime
   let timestamp = T.pack $ formatTime defaultTimeLocale "%B %d, %Y at %H:%M:%S UTC" currentTime
-      cc = ppCoveredCode fileType sc cs covMap projectName timestamp excludePatterns
+      cc = ppCoveredCode fileType showHits sc cs covMap projectName timestamp excludePatterns
   createDirectoryIfMissing True d
   writeFile fn cc
 
@@ -91,15 +106,15 @@ coverageFileExtension Html = ".html"
 coverageFileExtension Txt = ".txt"
 
 -- | Pretty-print the covered code
-ppCoveredCode :: CoverageFileType -> SourceCache -> [SolcContract] -> FrozenCoverageMap -> Maybe Text -> Text -> [Text] -> Text
-ppCoveredCode fileType sc cs s projectName timestamp excludePatterns
+ppCoveredCode :: CoverageFileType -> Bool -> SourceCache -> [SolcContract] -> FrozenCoverageMap -> Maybe Text -> Text -> [Text] -> Text
+ppCoveredCode fileType showHits sc cs s projectName timestamp excludePatterns
   | null s = "Coverage map is empty"
-  | Html <- fileType = htmlTemplate filteredFiles runtimeLinesMap covLines projectName timestamp commonPrefix
+  | Html <- fileType = htmlTemplate showHits filteredFiles runtimeLinesMap covLines projectName timestamp commonPrefix
   | otherwise = let
     -- Pretty print individual file coverage
     ppFile (srcPath, srcLines) =
       let runtimeLines = fromMaybe mempty $ Map.lookup srcPath runtimeLinesMap
-          marked = markLines fileType srcLines runtimeLines (fromMaybe Map.empty (Map.lookup srcPath covLines))
+          marked = markLines fileType showHits srcLines runtimeLines (fromMaybe Map.empty (Map.lookup srcPath covLines))
       in T.unlines (changeFileName srcPath : changeFileLines (V.toList marked))
     -- Text to add to top of the file
     topHeader = case fileType of
@@ -127,8 +142,8 @@ ppCoveredCode fileType sc cs s projectName timestamp excludePatterns
     runtimeLinesMap = buildRuntimeLinesMap sc cs
 
 -- | Mark one particular line, from a list of lines, keeping the order of them
-markLines :: CoverageFileType -> V.Vector Text -> S.Set Int -> Map Int [TxResult] -> V.Vector Text
-markLines fileType codeLines runtimeLines resultMap =
+markLines :: CoverageFileType -> Bool -> V.Vector Text -> S.Set Int -> Map Int LineCov -> V.Vector Text
+markLines fileType showHits codeLines runtimeLines resultMap =
   V.map markLine . V.filter shouldUseLine $ V.indexed codeLines
   where
   shouldUseLine (i, _) = case fileType of
@@ -136,7 +151,9 @@ markLines fileType codeLines runtimeLines resultMap =
     _ -> True
   markLine (i, codeLine) =
     let n = i + 1
-        results  = fromMaybe [] (Map.lookup n resultMap)
+        lineCov = Map.lookup n resultMap
+        results = maybe [] (.results) lineCov
+        hitCount = maybe 0 (.hits) lineCov
         markers = sort $ nub $ getMarker <$> results
         wrapLine :: Text -> Text
         wrapLine line = case fileType of
@@ -147,8 +164,14 @@ markLines fileType codeLines runtimeLines resultMap =
           where
           cssClass = if n `elem` runtimeLines then getCSSClass markers else "n" -- fallback to 'neutral' class.
         result = case fileType of
-          Lcov -> pack $ printf "DA:%d,%d" n (length results)
-          _ -> pack $ printf " %*d | %-4s| %s" lineNrSpan n markers (wrapLine codeLine)
+          Lcov ->
+            let count = if showHits then hitCount else fromIntegral (length results)
+            in pack $ printf "DA:%d,%d" n count
+          _ | showHits ->
+                let hitsLabel = if n `elem` runtimeLines then show hitCount else ""
+                in pack $ printf " %*d | %7s | %-4s| %s" lineNrSpan n hitsLabel markers (wrapLine codeLine)
+            | otherwise ->
+                pack $ printf " %*d | %-4s| %s" lineNrSpan n markers (wrapLine codeLine)
 
     in result
   lineNrSpan = length . show $ V.length codeLines + 1
@@ -170,16 +193,16 @@ getMarker ErrorOutOfGas = 'o'
 getMarker _             = 'e'
 
 -- | Given a source cache, a coverage map, a contract returns a list of covered lines
-srcMapCov :: SourceCache -> FrozenCoverageMap -> [SolcContract] -> Map FilePath (Map Int [TxResult])
+srcMapCov :: SourceCache -> FrozenCoverageMap -> [SolcContract] -> Map FilePath (Map Int LineCov)
 srcMapCov sc covMap contracts =
-  Map.unionsWith Map.union $ linesCovered <$> contracts
+  Map.unionsWith (Map.unionWith mergeLineCov) $ linesCovered <$> contracts
   where
-  linesCovered :: SolcContract -> Map FilePath (Map Int [TxResult])
+  linesCovered :: SolcContract -> Map FilePath (Map Int LineCov)
   linesCovered c =
     case Map.lookup c.runtimeCodehash covMap of
       Just vec -> VU.foldl' (\acc covInfo -> case covInfo of
-        (-1, _, _) -> acc -- not covered
-        (opIx, _stackDepths, txResults) ->
+        (-1, _, _, _) -> acc -- not covered
+        (opIx, _stackDepths, txResults, hitCount) ->
           case srcMapForOpLocation c opIx of
             Just srcMap ->
               case srcMapCodePos sc srcMap of
@@ -191,12 +214,38 @@ srcMapCov sc covMap contracts =
                   where
                   innerUpdate =
                     Map.alter
-                      (Just . (<> unpackTxResults txResults) . fromMaybe mempty)
+                      (Just . addLineCov . fromMaybe (LineCov 0 []))
                       line
+                  addLineCov existing =
+                    mergeLineCov existing (LineCov hitCount (unpackTxResults txResults))
                 Nothing -> acc
             Nothing -> acc
         ) mempty vec
       Nothing -> mempty
+
+-- | Build per-line hit counts for coverage reports.
+coverageLineHits
+  :: SourceCache
+  -> FrozenCoverageMap
+  -> [SolcContract]
+  -> [Text]
+  -> Map FilePath (Map Int Word64)
+coverageLineHits sc covMap contracts excludePatterns =
+  let
+    covLines = srcMapCov sc covMap contracts
+    allFiles = (\(path, src) -> (path, V.fromList (decodeUtf8 <$> BS.split 0xa src))) <$> Map.elems sc.files
+    commonPrefix = findCommonPathPrefix (map fst allFiles)
+    filteredFiles = filterExcludedFiles excludePatterns commonPrefix allFiles
+    runtimeLinesMap = buildRuntimeLinesMap sc contracts
+    fileLineHits srcPath =
+      let runtimeLines = fromMaybe mempty $ Map.lookup srcPath runtimeLinesMap
+          covered = fromMaybe Map.empty (Map.lookup srcPath covLines)
+          lineHits = Map.fromList
+            [ (line, maybe 0 (.hits) (Map.lookup line covered))
+            | line <- S.toList runtimeLines
+            ]
+      in (makeRelativePath commonPrefix srcPath, lineHits)
+  in Map.fromList (map (fileLineHits . fst) filteredFiles)
 
 -- | Given a contract, and tuple as coverage, return the corresponding mapped line (if any)
 srcMapForOpLocation :: SolcContract -> OpIx -> Maybe SrcMap
@@ -228,7 +277,7 @@ checkAssertionsCoverage sc env = do
 
 -- | Helper function for `checkAssertionsCoverage` which checks a single assertion
 -- and logs a warning if it wasn't hit
-checkAssertionReached :: Map String (Map Int [TxResult]) -> AssertLocation -> IO ()
+checkAssertionReached :: Map String (Map Int LineCov) -> AssertLocation -> IO ()
 checkAssertionReached covLines assert =
   maybe
     warnAssertNotReached checkCoverage
@@ -269,13 +318,13 @@ makeRelativePath basePath filePath =
       | otherwise = Nothing
 
 -- | Generate modern HTML coverage report using mustache template
-htmlTemplate :: [(FilePath, V.Vector Text)] -> Map FilePath (S.Set Int) -> Map FilePath (Map Int [TxResult]) -> Maybe Text -> Text -> FilePath -> Text
-htmlTemplate allFiles runtimeLinesMap covLines projectName timestamp commonPrefix =
-  substituteValue coverageTemplate $ buildTemplateContext allFiles runtimeLinesMap covLines projectName timestamp commonPrefix
+htmlTemplate :: Bool -> [(FilePath, V.Vector Text)] -> Map FilePath (S.Set Int) -> Map FilePath (Map Int LineCov) -> Maybe Text -> Text -> FilePath -> Text
+htmlTemplate showHits allFiles runtimeLinesMap covLines projectName timestamp commonPrefix =
+  substituteValue coverageTemplate $ buildTemplateContext showHits allFiles runtimeLinesMap covLines projectName timestamp commonPrefix
 
 -- | Build the context object for the mustache template
-buildTemplateContext :: [(FilePath, V.Vector Text)] -> Map FilePath (S.Set Int) -> Map FilePath (Map Int [TxResult]) -> Maybe Text -> Text -> FilePath -> Value
-buildTemplateContext allFiles runtimeLinesMap covLines projectName timestamp commonPrefix =
+buildTemplateContext :: Bool -> [(FilePath, V.Vector Text)] -> Map FilePath (S.Set Int) -> Map FilePath (Map Int LineCov) -> Maybe Text -> Text -> FilePath -> Value
+buildTemplateContext showHits allFiles runtimeLinesMap covLines projectName timestamp commonPrefix =
   let
     totalFiles = length allFiles
     (totalLines, totalCoveredLines, totalActiveLines) = calculateTotalStats allFiles runtimeLinesMap covLines
@@ -286,7 +335,7 @@ buildTemplateContext allFiles runtimeLinesMap covLines projectName timestamp com
       Just name -> "Echidna Coverage Report - " <> name
       Nothing -> "Echidna Coverage Report"
 
-    filesData = map (buildFileContext runtimeLinesMap covLines commonPrefix) allFiles
+    filesData = map (buildFileContext showHits runtimeLinesMap covLines commonPrefix) allFiles
   in toMustache $ (Map.fromList :: [(Text, Value)] -> Map Text Value)
     [ ("title", toMustache title)
     , ("totalFiles", toMustache $ T.pack $ show totalFiles)
@@ -296,12 +345,13 @@ buildTemplateContext allFiles runtimeLinesMap covLines projectName timestamp com
     , ("coveragePercentage", toMustache $ T.pack $ printf "%.1f" (fromIntegral coveragePercentage :: Double))
     , ("coverageColor", toMustache $ getCoverageColorHsl coveragePercentage)
     , ("timestamp", toMustache timestamp)
+    , ("showHitCounts", toMustache showHits)
     , ("files", toMustache filesData)
     ]
 
 -- | Build context for a single file
-buildFileContext :: Map FilePath (S.Set Int) -> Map FilePath (Map Int [TxResult]) -> FilePath -> (FilePath, V.Vector Text) -> Value
-buildFileContext runtimeLinesMap covLines commonPrefix (srcPath, srcLines) =
+buildFileContext :: Bool -> Map FilePath (S.Set Int) -> Map FilePath (Map Int LineCov) -> FilePath -> (FilePath, V.Vector Text) -> Value
+buildFileContext showHits runtimeLinesMap covLines commonPrefix (srcPath, srcLines) =
   let
     runtimeLines = fromMaybe mempty $ Map.lookup srcPath runtimeLinesMap
     covered = fromMaybe Map.empty (Map.lookup srcPath covLines)
@@ -313,7 +363,7 @@ buildFileContext runtimeLinesMap covLines commonPrefix (srcPath, srcLines) =
     displayPath = makeRelativePath commonPrefix srcPath
     fileId = T.pack $ map (\c -> if c `elem` ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" :: String) then c else '_') displayPath
 
-    linesData = V.toList $ V.imap (buildLineContext runtimeLines covered) srcLines
+    linesData = V.toList $ V.imap (buildLineContext showHits runtimeLines covered) srcLines
   in toMustache $ (Map.fromList :: [(Text, Value)] -> Map Text Value)
     [ ("fileId", toMustache fileId)
     , ("filePath", toMustache $ T.pack displayPath)
@@ -326,11 +376,13 @@ buildFileContext runtimeLinesMap covLines commonPrefix (srcPath, srcLines) =
     ]
 
 -- | Build context for a single line of code
-buildLineContext :: S.Set Int -> Map Int [TxResult] -> Int -> Text -> Value
-buildLineContext runtimeLines covered lineIndex codeLine =
+buildLineContext :: Bool -> S.Set Int -> Map Int LineCov -> Int -> Text -> Value
+buildLineContext showHits runtimeLines covered lineIndex codeLine =
   let
     lineNum = lineIndex + 1
-    results = fromMaybe [] (Map.lookup lineNum covered)
+    lineCov = Map.lookup lineNum covered
+    results = maybe [] (.results) lineCov
+    hitCount = maybe 0 (.hits) lineCov
     isActive = lineNum `S.member` runtimeLines
     isCovered = not (null results)
     rowClass
@@ -340,12 +392,13 @@ buildLineContext runtimeLines covered lineIndex codeLine =
 
   in toMustache $ (Map.fromList :: [(Text, Value)] -> Map Text Value) $ catMaybes
     [ Just ("lineNumber", toMustache $ T.pack $ show lineNum)
+    , Just ("hitCount", toMustache $ if showHits && isActive then T.pack (show hitCount) else "")
     , Just ("sourceCode", toMustache codeLine)
     , fmap (\v -> ("rowClass", toMustache v)) rowClass
     ]
 
 -- | Calculate total statistics across all files
-calculateTotalStats :: [(FilePath, V.Vector Text)] -> Map FilePath (S.Set Int) -> Map FilePath (Map Int [TxResult]) -> (Int, Int, Int)
+calculateTotalStats :: [(FilePath, V.Vector Text)] -> Map FilePath (S.Set Int) -> Map FilePath (Map Int LineCov) -> (Int, Int, Int)
 calculateTotalStats allFiles runtimeLinesMap covLines =
   let
     fileStats (srcPath, srcLines) =

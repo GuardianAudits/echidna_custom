@@ -203,4 +203,29 @@ Binary:
 
 ---
 
+## 7) Coverage hit counts (per‑line)
+
+Per‑line hit counts are now tracked and can be displayed in coverage outputs.
+
+**Behavior**
+- Hit counts are collected **for every opcode** executed and aggregated to the corresponding source line.
+- Applies to **all contracts covered** in the run (protocol‑wide), not just fuzz targets.
+
+**Where it shows**
+- **HTML coverage report**: new hits column (when enabled).
+- **TXT coverage report**: extra hits column (when enabled).
+- **LCOV**: uses actual hit counts for `DA:<line>,<count>` when enabled.
+- **JSON**: `coverage_hits.json` written next to coverage reports when enabled.
+
+**Config / CLI**
+```yaml
+coverageLineHits: true
+```
+
+```bash
+--coverage-line-hits true|false
+```
+
+---
+
 If you want further changes documented here, tell me what to add.

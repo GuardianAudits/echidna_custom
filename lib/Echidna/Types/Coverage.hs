@@ -30,7 +30,10 @@ type CoverageMap = Map W256 (IOVector CoverageInfo)
 type FrozenCoverageMap = Map W256 (V.Vector CoverageInfo)
 
 -- | Basic coverage information
-type CoverageInfo = (OpIx, StackDepths, TxResults)
+type CoverageInfo = (OpIx, StackDepths, TxResults, HitCount)
+
+-- | Execution hit count per instruction
+type HitCount = Word64
 
 -- | Index per operation in the source code, obtained from the source mapping
 type OpIx = Int
@@ -57,7 +60,7 @@ mergeFrozenCoverageMaps dapp initMap runtimeMap = Map.unionWith (<>) runtimeMap 
     initMap' = Map.mapWithKey modifyInitMapEntry initMap
     -- eta reduced, second argument is a vec
     modifyInitMapEntry hash = V.map $ modifyCoverageInfo $ getOpOffset hash
-    modifyCoverageInfo toAdd (op, x, y) = (op + toAdd, x, y)
+    modifyCoverageInfo toAdd (op, x, y, h) = (op + toAdd, x, y, h)
     getOpOffset hash = maybe 0 (length . (.runtimeSrcmap) . snd) $ Map.lookup hash dapp.solcByHash
 
 -- | Given the CoverageMaps used for contract init and runtime,
@@ -79,7 +82,7 @@ scoveragePoints cm = do
   sum <$> mapM (VM.foldl' countCovered 0) (Map.elems cm)
 
 countCovered :: Int -> CoverageInfo -> Int
-countCovered acc (opIx,_,_) = if opIx == -1 then acc else acc + 1
+countCovered acc (opIx,_,_,_) = if opIx == -1 then acc else acc + 1
 
 unpackTxResults :: TxResults -> [TxResult]
 unpackTxResults txResults =

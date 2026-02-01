@@ -6,6 +6,7 @@ import Control.Monad (unless, when, forM_)
 import Control.Monad.Random (getRandomR)
 import Control.Monad.Reader (runReaderT, liftIO)
 import Data.ByteString.Lazy qualified as LBS
+import Data.Aeson (encode)
 import Data.Aeson.Key qualified as Aeson.Key
 import Data.Char (toLower)
 import Data.Function ((&))
@@ -38,6 +39,7 @@ import Echidna
 import Echidna.Campaign (isSuccessful)
 import Echidna.Config
 import Echidna.LogicalCoverage (mergeLogicalCoverage, logicalCoverageToJSON)
+import Echidna.Types.Coverage (mergeCoverageMaps)
 import Echidna.Onchain qualified as Onchain
 import Echidna.Output.Corpus
 import Echidna.Output.Foundry
@@ -125,6 +127,11 @@ main = withUtf8 $ withCP65001 $ do
       let contracts = Map.elems env.dapp.solcByName
       saveCoverages env runId dir buildOutput.sources contracts
 
+      when cfg.campaignConf.coverageLineHits $ do
+        covMap <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
+        let lineHits = coverageLineHits buildOutput.sources covMap contracts cfg.campaignConf.coverageExcludes
+        liftIO $ LBS.writeFile (dir </> "coverage_hits.json") (encode lineHits)
+
   -- save logical coverage report
   when cfg.campaignConf.logicalCoverage $ do
     let merged = mergeLogicalCoverage cfg.campaignConf.logicalCoverageMaxReasons (map (.logicalCoverage) campaignStates)
@@ -143,6 +150,7 @@ data Options = Options
   , cliOutputFormat     :: Maybe OutputFormat
   , cliCorpusDir        :: Maybe FilePath
   , cliCoverageDir      :: Maybe FilePath
+  , cliCoverageLineHits :: Maybe Bool
   , cliLogicalCoverage  :: Maybe Bool
   , cliLogicalCoverageTopN :: Maybe Int
   , cliLogicalCoverageMaxReasons :: Maybe Int
@@ -206,6 +214,9 @@ options = Options . NE.fromList
   <*> optional (option str $ long "coverage-dir"
     <> metavar "PATH"
     <> help "Directory to save coverage reports. Defaults to corpus-dir if not specified.")
+  <*> optional (option bool $ long "coverage-line-hits"
+    <> metavar "BOOL"
+    <> help "Include per-line hit counts in coverage outputs (default: true).")
   <*> optional (option bool $ long "logical-coverage"
     <> metavar "BOOL"
     <> help "Enable logical coverage reporting (default: true).")
@@ -314,6 +325,7 @@ overrideConfig config Options{..} = do
     overrideCampaignConf campaignConf = campaignConf
       { corpusDir = cliCorpusDir <|> campaignConf.corpusDir
       , coverageDir = cliCoverageDir <|> campaignConf.coverageDir
+      , coverageLineHits = fromMaybe campaignConf.coverageLineHits cliCoverageLineHits
       , testLimit = fromMaybe campaignConf.testLimit cliTestLimit
       , shrinkLimit = fromMaybe campaignConf.shrinkLimit cliShrinkLimit
       , seqLen = fromMaybe campaignConf.seqLen cliSeqLen

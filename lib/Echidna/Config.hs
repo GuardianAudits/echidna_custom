@@ -101,6 +101,7 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "mutConsts" ..!= defaultMutationConsts
         <*> v ..:? "coverageFormats" ..!= [Txt,Html,Lcov]
         <*> v ..:? "coverageExcludes" ..!= []
+        <*> v ..:? "coverageLineHits" ..!= True
         <*> v ..:? "workers"
         <*> v ..:? "server"
         <*> v ..:? "symExec"            ..!= False

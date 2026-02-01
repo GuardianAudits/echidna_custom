@@ -96,6 +96,9 @@
                                 {{#lines}}
                                 <tr{{#rowClass}} class="{{rowClass}}"{{/rowClass}}>
                                     <td class="row-line-number">{{lineNumber}}</td>
+                                    {{#showHitCounts}}
+                                    <td class="row-hit-count">{{hitCount}}</td>
+                                    {{/showHitCounts}}
                                     <td class="row-source"><pre>{{sourceCode}}</pre></td>
                                 </tr>
                                 {{/lines}}
