@@ -39,6 +39,8 @@ import Echidna
 import Echidna.Campaign (isSuccessful)
 import Echidna.Config
 import Echidna.LogicalCoverage (mergeLogicalCoverage, logicalCoverageToJSON)
+import Echidna.MCP (startMCPServer, setMCPPhase)
+import Echidna.MCP.Store (MCPState(..))
 import Echidna.Types.Coverage (mergeCoverageMaps)
 import Echidna.Onchain qualified as Onchain
 import Echidna.Output.Corpus
@@ -70,10 +72,16 @@ main = withUtf8 $ withCP65001 $ do
   -- take the seed from config, otherwise generate a new one
   seed <- maybe (getRandomR (0, maxBound)) pure cfg.campaignConf.seed
   (vm, env, dict) <- prepareContract cfg cliFilePath buildOutput cliSelectedContract seed
+  startMCPServer env
 
   initialCorpus <- loadInitialCorpus env
   -- start ui and run tests
   campaignStates <- runReaderT (ui vm dict initialCorpus cliSelectedContract) env
+  forM_ env.mcpState $ \st -> do
+    let MCPState{phase = phaseRef} = st
+    phaseVal <- readIORef phaseRef
+    when (phaseVal == ("running" :: Text) || phaseVal == "paused") $
+      setMCPPhase env "completed"
 
   tests <- traverse readIORef env.testRefs
 
@@ -139,6 +147,8 @@ main = withUtf8 $ withCP65001 $ do
     liftIO $ createDirectoryIfMissing True outputDir
     liftIO $ LBS.writeFile (outputDir </> "logical_coverage.json") (logicalCoverageToJSON merged)
 
+  setMCPPhase env "finished"
+
   if isSuccessful tests then exitSuccess else exitWith (ExitFailure 1)
 
 data Options = Options
@@ -156,6 +166,14 @@ data Options = Options
   , cliLogicalCoverageMaxReasons :: Maybe Int
   , cliLogicalCoverageMaxSamples :: Maybe Int
   , cliLogicalCoverageMaxDepth :: Maybe Int
+  , cliMcpEnabled      :: Maybe Bool
+  , cliMcpTransport    :: Maybe MCPTransport
+  , cliMcpHost         :: Maybe Text
+  , cliMcpPort         :: Maybe Int
+  , cliMcpSocket       :: Maybe FilePath
+  , cliMcpMaxEvents    :: Maybe Int
+  , cliMcpMaxReverts   :: Maybe Int
+  , cliMcpMaxTxs       :: Maybe Int
   , cliTestMode         :: Maybe TestMode
   , cliAllContracts     :: Bool
   , cliTimeout          :: Maybe Int
@@ -188,6 +206,14 @@ bool = maybeReader (f . map toLower) where
   f "true" = Just True
   f "false" = Just False
   f _ = Nothing
+
+mcpTransport :: ReadM MCPTransport
+mcpTransport = eitherReader $ \s ->
+  case map toLower s of
+    "http" -> Right MCPHttp
+    "unix" -> Right MCPUnix
+    "stdio" -> Right MCPStdio
+    _ -> Left "invalid mcp transport (expected http|unix|stdio)"
 
 options :: Parser Options
 options = Options . NE.fromList
@@ -232,6 +258,30 @@ options = Options . NE.fromList
   <*> optional (option auto $ long "logical-coverage-max-depth"
     <> metavar "N"
     <> help "Maximum depth for nested types in future expansions.")
+  <*> optional (option bool $ long "mcp"
+    <> metavar "BOOL"
+    <> help "Enable MCP server (default: false).")
+  <*> optional (option mcpTransport $ long "mcp-transport"
+    <> metavar "TRANSPORT"
+    <> help "MCP transport: http|unix|stdio.")
+  <*> optional (option (T.pack <$> str) $ long "mcp-host"
+    <> metavar "HOST"
+    <> help "MCP host for HTTP transport (default: 127.0.0.1).")
+  <*> optional (option auto $ long "mcp-port"
+    <> metavar "PORT"
+    <> help "MCP port for HTTP transport (default: 9001).")
+  <*> optional (option str $ long "mcp-socket"
+    <> metavar "PATH"
+    <> help "MCP unix socket path (default: /tmp/echidna.mcp.sock).")
+  <*> optional (option auto $ long "mcp-max-events"
+    <> metavar "N"
+    <> help "MCP ring buffer size for events.")
+  <*> optional (option auto $ long "mcp-max-reverts"
+    <> metavar "N"
+    <> help "MCP ring buffer size for reverts.")
+  <*> optional (option auto $ long "mcp-max-txs"
+    <> metavar "N"
+    <> help "MCP ring buffer size for transactions.")
   <*> optional (option str $ long "test-mode"
     <> help "Test mode to use. Either 'property', 'assertion', 'dapptest', 'optimization', 'overflow' or 'exploration'" )
   <*> switch (long "all-contracts"
@@ -303,6 +353,7 @@ overrideConfig config Options{..} = do
     config { solConf = overrideSolConf config.solConf
            , campaignConf = overrideCampaignConf config.campaignConf
            , uiConf = overrideUiConf config.uiConf
+           , mcpConf = overrideMcpConf config.mcpConf
            , rpcUrl = cliRpcUrl <|> envRpcUrl <|> config.rpcUrl
            , rpcBlock = cliRpcBlock <|> envRpcBlock <|> config.rpcBlock
            , etherscanApiKey = envEtherscanApiKey <|> config.etherscanApiKey
@@ -352,6 +403,17 @@ overrideConfig config Options{..} = do
       , contractAddr = fromMaybe solConf.contractAddr cliContractAddr
       , testMode = maybe solConf.testMode validateTestMode cliTestMode
       , allContracts = cliAllContracts || solConf.allContracts
+      }
+
+    overrideMcpConf mcpConf = mcpConf
+      { enabled = fromMaybe mcpConf.enabled cliMcpEnabled
+      , transport = fromMaybe mcpConf.transport cliMcpTransport
+      , host = fromMaybe mcpConf.host cliMcpHost
+      , port = fromMaybe mcpConf.port cliMcpPort
+      , socketPath = fromMaybe mcpConf.socketPath cliMcpSocket
+      , maxEvents = fromMaybe mcpConf.maxEvents cliMcpMaxEvents
+      , maxReverts = fromMaybe mcpConf.maxReverts cliMcpMaxReverts
+      , maxTxs = fromMaybe mcpConf.maxTxs cliMcpMaxTxs
       }
 
 printProjectName :: Maybe Text -> IO ()
