@@ -106,6 +106,12 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      text-align: left;\n\
 \      vertical-align: top;\n\
 \    }\n\
+\    #logicalTable { table-layout: fixed; }\n\
+\    #logicalTable th:nth-child(1), #logicalTable td:nth-child(1) { width: 55%; }\n\
+\    #logicalTable th:nth-child(2), #logicalTable td:nth-child(2) { width: 15%; }\n\
+\    #logicalTable th:nth-child(3), #logicalTable td:nth-child(3) { width: 30%; }\n\
+\    #logicalTable th, #logicalTable td { overflow-wrap: anywhere; }\n\
+\    #logicalTable .pill { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }\n\
 \    #traceView {\n\
 \      margin: 0;\n\
 \      padding: 10px 12px;\n\
