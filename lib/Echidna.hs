@@ -37,6 +37,7 @@ import Echidna.Types.Solidity
 import Echidna.Types.Test (EchidnaTest)
 import Echidna.Types.Tx
 import Echidna.Types.World
+import Echidna.MCP.Store (newMCPState)
 
 -- | This function is used to prepare, process, compile and initialize smart contracts for testing.
 -- It takes:
@@ -129,9 +130,13 @@ mkEnv cfg buildOutput tests world slitherInfo = do
   testRefs <- traverse newIORef tests
   fetchSession <- EVM.Fetch.mkSession cfg.campaignConf.corpusDir (fromIntegral <$> cfg.rpcBlock)
   contractNameCache <- newIORef mempty
+  mcpState <- if cfg.mcpConf.enabled
+    then Just <$> newMCPState cfg.mcpConf.maxEvents cfg.mcpConf.maxReverts cfg.mcpConf.maxTxs
+    else pure Nothing
   -- TODO put in real path
   let dapp = dappInfo "/" buildOutput
   pure $ Env { cfg, dapp, codehashMap, fetchSession, contractNameCache
              , chainId, eventQueue, coverageRefInit, coverageRefRuntime, corpusRef, testRefs, world
              , slitherInfo
+             , mcpState
              }

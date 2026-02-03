@@ -19,6 +19,8 @@ import Data.Aeson (FromJSON(..), Value(..), object, (.=), encode, eitherDecode, 
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as LBS
+import Data.ByteString qualified as BS
+import Data.ByteString.Base16 qualified as BS16
 import Data.IORef (atomicModifyIORef', readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -30,58 +32,74 @@ import Data.Time (LocalTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.List (foldl')
 import Data.String (fromString)
+import System.IO (hPutStrLn, stderr)
 import Network.HTTP.Types (status200, status400, status404)
 import Network.Wai (Application, pathInfo, requestMethod, responseLBS, strictRequestBody, Response, ResponseReceived)
 import Network.Wai.Handler.Warp (runSettings, setHost, setPort, defaultSettings)
 import Text.Read (readMaybe)
 
 import EVM.Format (showTraceTree)
-import EVM.Types (VM(..), VMResult(..), VMType(Concrete), CheatCallStats(..), FunctionSelector)
+import EVM.Types
+  ( VM(..)
+  , VMResult(..)
+  , VMType(Concrete)
+  , CheatCallStats(..)
+  , FunctionSelector
+  , EvmError(..)
+  , Expr(ConcreteBuf)
+  )
 
 import Echidna.ABI (encodeSigWithName, encodeSig, ppAbiValue, signatureCall)
 import Echidna.ContractName (contractNameForAddr)
-import Echidna.LogicalCoverage (failureReason, isSuccess, mergeLogicalCoverage)
+import Echidna.LogicalCoverage (mergeLogicalCoverage)
+import Echidna.Events (decodeRevertMsg)
 import Echidna.MCP.Store
 import Echidna.MCP.Types
 import Echidna.MCP.UI (mcpDashboardHtml)
 import Echidna.Output.Source (coverageLineHits)
-import Echidna.Types.Config (Env(..), MCPTransport(..))
+import Echidna.Types.Campaign (CampaignConf(..))
+import Echidna.Types.Config (Env(..), EConfig(..), MCPConf(..), MCPTransport(..))
 import Echidna.Types.Test (EchidnaTest)
 import Echidna.Types.Tx (Tx(..), TxCall(..))
-import Echidna.Types.Worker (CampaignEvent(..), WorkerEvent(..), WorkerType(..))
+import Echidna.Types.Worker (CampaignEvent, WorkerEvent(..), WorkerType(..))
+import Echidna.Worker ()
+import qualified Echidna.Types.Worker as Worker
 import Echidna.Types.Coverage (coverageStats, mergeCoverageMaps)
 import Echidna.LogicalCoverage.Types (LogicalCoverage)
 import Echidna.Utility (getTimestamp)
+import EVM.Dapp (DappInfo(..))
 
 -- | Start MCP server if enabled.
 startMCPServer :: Env -> IO ()
-startMCPServer env =
-  case env.mcpState of
+startMCPServer env@Env{mcpState, eventQueue, cfg} =
+  case mcpState of
     Nothing -> pure ()
     Just st -> do
-      let conf = env.cfg.mcpConf
+      let EConfig{mcpConf = MCPConf{transport, host, port}} = cfg
       -- listener for campaign events
-      chan <- dupChan env.eventQueue
+      chan <- dupChan eventQueue
       _ <- forkIO $ forever $ do
         (ts, ev) <- readChan chan
         recordEvent st ts ev
       -- start transport
-      case conf.transport of
+      case transport of
         MCPHttp -> do
-          let host = T.unpack conf.host
-              settings = setHost (fromString host) $ setPort conf.port defaultSettings
+          let hostStr = T.unpack host
+              settings = setHost (fromString hostStr) $ setPort port defaultSettings
           _ <- forkIO $ runSettings settings (mcpApp env st)
           pure ()
-        _ -> pure ()
+        other -> do
+          hPutStrLn stderr $ "MCP transport not supported: " <> show other <> " (server disabled)"
+          writeIORef st.phase "disabled"
 
 setMCPPhase :: Env -> Text -> IO ()
-setMCPPhase env phaseName =
-  forM_ env.mcpState $ \st -> writeIORef st.phase phaseName
+setMCPPhase Env{mcpState} phaseName =
+  forM_ mcpState $ \st -> writeIORef st.phase phaseName
 
 -- | Pause/stop checkpoint for worker loops.
 mcpCheckpoint :: Env -> IO Bool
-mcpCheckpoint env =
-  case env.mcpState of
+mcpCheckpoint Env{mcpState} =
+  case mcpState of
     Nothing -> pure False
     Just st -> waitIfPaused st
 
@@ -102,10 +120,11 @@ recordTx
   -> VMResult Concrete
   -> m ()
 recordTx st vm tx result = do
-  env <- ask
-  let success = isSuccess result
-  let reason = failureReason result
-  now <- liftIO $ formatTimestamp =<< getTimestamp
+  Env{dapp} <- ask
+  let success = isSuccessResult result
+  let reason = failureReasonText result
+  nowTime <- liftIO getTimestamp
+  let now = formatTimestamp nowTime
   methodName <- case tx.call of
     SolCall solCall -> do
       contractName <- contractNameForAddr vm tx.dst
@@ -115,10 +134,11 @@ recordTx st vm tx result = do
 
   -- update counters
   liftIO $ atomicModifyIORef' st.counters $ \c ->
-    let c' = c
-          { totalCalls = c.totalCalls + 1
-          , successCalls = c.successCalls + if success then 1 else 0
-          , failedCalls = c.failedCalls + if success then 0 else 1
+    let MCPRunCounters { totalCalls = t, successCalls = s, failedCalls = f } = c
+        c' = MCPRunCounters
+          { totalCalls = t + 1
+          , successCalls = s + if success then 1 else 0
+          , failedCalls = f + if success then 0 else 1
           }
     in (c', ())
 
@@ -129,7 +149,7 @@ recordTx st vm tx result = do
   -- update handler stats
   case tx.call of
     SolCall solCall -> do
-      let args = map (T.pack . ppAbiValue) (snd solCall)
+      let args = map (T.pack . ppAbiValue vm.labels) (snd solCall)
       let updateStat stat =
             stat
               { totalCalls = stat.totalCalls + 1
@@ -151,9 +171,10 @@ recordTx st vm tx result = do
       let selector = case tx.call of
             SolCall solCall -> Just (encodeSig (signatureCall solCall))
             _ -> Nothing
-      let traceText = T.pack (showTraceTree env.dapp vm)
-      let traceEntry = MCPTrace 0 now selector r traceText
-      traceId <- liftIO $ pushRing st.traces (\idVal -> traceEntry { traceId = idVal })
+      let traceText = showTraceTree dapp vm
+      traceId <- liftIO $ pushRing st.traces (\idVal ->
+        MCPTrace { traceId = idVal, timestamp = now, selector = selector, reason = r, trace = traceText }
+        )
       let revertEntry = MCPRevert
             { revertId = 0
             , timestamp = now
@@ -166,6 +187,7 @@ recordTx st vm tx result = do
             , traceId = Just traceId
             }
       _ <- liftIO $ pushRing st.reverts (\idVal -> revertEntry { revertId = idVal })
+      pure ()
 
 -- | MCP HTTP application.
 mcpApp :: Env -> MCPState -> Application
@@ -229,6 +251,7 @@ resourcesListResult = object
       ]
   ]
   where
+    resource :: Text -> Text -> Value
     resource uri name = object
       [ "uri" .= uri
       , "name" .= name
@@ -267,6 +290,7 @@ toolsListResult = object
       ]
   ]
   where
+    tool :: Text -> Text -> Value
     tool name desc = object
       [ "name" .= name
       , "description" .= desc
@@ -291,8 +315,8 @@ toolsCallResult env st paramsVal =
 runTool :: Env -> MCPState -> Text -> Maybe Value -> IO Value
 runTool env st name args =
   case name of
-    "pause" -> pauseMCP st >> pure (object ["ok" .= True])
-    "resume" -> resumeMCP st >> pure (object ["ok" .= True])
+    "pause" -> pauseMCP st >> setMCPPhase env "paused" >> pure (object ["ok" .= True])
+    "resume" -> resumeMCP st >> setMCPPhase env "running" >> pure (object ["ok" .= True])
     "stop" -> requestStopMCP st >> setMCPPhase env "stopped" >> pure (object ["ok" .= True])
     "get_status" -> readResource env st "echidna://run/status"
     "get_events" -> readResource env st (resourceWithArgs "echidna://run/events" args)
@@ -302,7 +326,7 @@ runTool env st name args =
     "get_logical_coverage" -> readResource env st "echidna://stats/logical-coverage"
     "get_coverage_hits" -> readResource env st "echidna://coverage/lines"
     "get_cheat_stats" -> readResource env st "echidna://stats/cheatcodes"
-    _ -> object ["error" .= ("unknown tool" :: Text)]
+    _ -> pure (object ["error" .= ("unknown tool" :: Text)])
 
 resourceWithArgs :: Text -> Maybe Value -> Text
 resourceWithArgs base args =
@@ -335,14 +359,14 @@ readResource env st uri = do
     "echidna://coverage/lines" -> coverageLines env
     "echidna://stats/cheatcodes" -> cheatStats st
     "echidna://stats/logical-coverage" -> logicalCoverage env st
-    _ -> object ["error" .= ("unknown resource" :: Text)]
+    _ -> pure (object ["error" .= ("unknown resource" :: Text)])
 
 runStatus :: Env -> MCPState -> IO Value
-runStatus env st = do
+runStatus Env{coverageRefInit, coverageRefRuntime, corpusRef} st = do
   counters <- readIORef st.counters
   phase <- readIORef st.phase
-  (points, codehashes) <- coverageStats env.coverageRefInit env.coverageRefRuntime
-  corpus <- readIORef env.corpusRef
+  (points, codehashes) <- coverageStats coverageRefInit coverageRefRuntime
+  corpus <- readIORef corpusRef
   pure $ object
     [ "phase" .= phase
     , "counters" .= counters
@@ -352,21 +376,29 @@ runStatus env st = do
     ]
 
 runConfig :: Env -> IO Value
-runConfig env = do
-  let c = env.cfg.campaignConf
+runConfig Env{cfg = EConfig{campaignConf = c}} = do
+  let CampaignConf
+        { testLimit = testLimit'
+        , seqLen = seqLen'
+        , shrinkLimit = shrinkLimit'
+        , coverageFormats = coverageFormats'
+        , coverageLineHits = coverageLineHits'
+        , logicalCoverage = logicalCoverage'
+        , logicalCoverageTopN = logicalCoverageTopN'
+        } = c
   pure $ object
-    [ "testLimit" .= c.testLimit
-    , "seqLen" .= c.seqLen
-    , "shrinkLimit" .= c.shrinkLimit
-    , "coverageFormats" .= c.coverageFormats
-    , "coverageLineHits" .= c.coverageLineHits
-    , "logicalCoverage" .= c.logicalCoverage
-    , "logicalCoverageTopN" .= c.logicalCoverageTopN
+    [ "testLimit" .= testLimit'
+    , "seqLen" .= seqLen'
+    , "shrinkLimit" .= shrinkLimit'
+    , "coverageFormats" .= coverageFormats'
+    , "coverageLineHits" .= coverageLineHits'
+    , "logicalCoverage" .= logicalCoverage'
+    , "logicalCoverageTopN" .= logicalCoverageTopN'
     ]
 
 runTests :: Env -> IO Value
-runTests env = do
-  tests <- traverse readIORef env.testRefs
+runTests Env{testRefs} = do
+  tests <- traverse readIORef testRefs
   pure $ object ["tests" .= (tests :: [EchidnaTest])]
 
 runEvents :: MCPState -> Map Text Text -> IO Value
@@ -403,15 +435,17 @@ runTraces st query = do
   pure $ object ["traces" .= map (\(_, r) -> r) entries]
 
 coverageSummary :: Env -> IO Value
-coverageSummary env = do
-  (points, codehashes) <- coverageStats env.coverageRefInit env.coverageRefRuntime
+coverageSummary Env{coverageRefInit, coverageRefRuntime} = do
+  (points, codehashes) <- coverageStats coverageRefInit coverageRefRuntime
   pure $ object ["points" .= points, "uniqueCodehashes" .= codehashes]
 
 coverageLines :: Env -> IO Value
-coverageLines env = do
-  covMap <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
-  let contracts = Map.elems env.dapp.solcByName
-      hits = coverageLineHits env.dapp.sources covMap contracts env.cfg.campaignConf.coverageExcludes
+coverageLines Env{dapp = dappInfo, coverageRefInit, coverageRefRuntime, cfg = EConfig{campaignConf = c}} = do
+  let CampaignConf{coverageExcludes = coverageExcludes'} = c
+      DappInfo{solcByName = solcByName', sources = sources'} = dappInfo
+  covMap <- mergeCoverageMaps dappInfo coverageRefInit coverageRefRuntime
+  let contracts = Map.elems solcByName'
+      hits = coverageLineHits sources' covMap contracts coverageExcludes'
   pure $ toJSON hits
 
 cheatStats :: MCPState -> IO Value
@@ -430,20 +464,22 @@ cheatStats st = do
   pure $ object ["stats" .= entries]
 
 logicalCoverage :: Env -> MCPState -> IO Value
-logicalCoverage env st = do
+logicalCoverage Env{cfg = EConfig{campaignConf = c}} st = do
+  let CampaignConf{logicalCoverageMaxReasons = maxReasons} = c
   m <- readIORef st.logicalByWorker
-  let merged = mergeLogicalCoverage env.cfg.campaignConf.logicalCoverageMaxReasons (Map.elems m)
+  let merged = mergeLogicalCoverage maxReasons (Map.elems m)
   pure $ toJSON merged
 
 recordEvent :: MCPState -> LocalTime -> CampaignEvent -> IO ()
 recordEvent st ts ev = do
   let (wid, wtype, etype, payload) = case ev of
-        WorkerEvent wid wtype e ->
+        Worker.WorkerEvent wid wtype e ->
           (Just wid, Just (workerTypeText wtype), workerEventType e, toJSON e)
-        Failure msg -> (Nothing, Nothing, "Failure", toJSON msg)
-        ReproducerSaved f -> (Nothing, Nothing, "ReproducerSaved", toJSON f)
+        Worker.Failure msg -> (Nothing, Nothing, "Failure", toJSON msg)
+        Worker.ReproducerSaved f -> (Nothing, Nothing, "ReproducerSaved", toJSON f)
       event = MCPEvent 0 (formatTimestamp ts) wid wtype etype payload
   _ <- pushRing st.events (\idVal -> event { eventId = idVal })
+  pure ()
 
 workerTypeText :: WorkerType -> Text
 workerTypeText = \case
@@ -470,6 +506,29 @@ mergeCheatStats = foldl' (Map.unionWith mergeStat) mempty
         , successCalls = a.successCalls + b.successCalls
         , failedCalls = a.failedCalls + b.failedCalls
         }
+
+isSuccessResult :: VMResult Concrete -> Bool
+isSuccessResult = \case
+  VMSuccess _ -> True
+  _ -> False
+
+failureReasonText :: VMResult Concrete -> Maybe Text
+failureReasonText = \case
+  VMFailure (Revert (ConcreteBuf bs)) -> Just $ decodeRevertReason bs
+  VMFailure err -> Just $ "Error(" <> T.pack (show err) <> ")"
+  _ -> Nothing
+
+decodeRevertReason :: BS.ByteString -> Text
+decodeRevertReason bs =
+  fromMaybe fallback (decodeRevertMsg True bs)
+  where
+    fallback =
+      if BS.length bs >= 4
+        then "CustomError(" <> selectorHex bs <> ")"
+        else "UnknownRevert(" <> T.pack (show (BS.length bs)) <> ")"
+    selectorHex bytes =
+      let hex = decodeUtf8 (BS16.encode (BS.take 4 bytes))
+      in "0x" <> hex
 
 formatTimestamp :: LocalTime -> Text
 formatTimestamp = T.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S"

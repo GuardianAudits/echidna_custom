@@ -164,7 +164,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      </div>\n\
 \    </div>\n\
 \  </header>\n\
-\n\
 \  <div class=\"layout\">\n\
 \    <section class=\"card\" style=\"grid-column: span 12;\">\n\
 \      <div class=\"section-title\">\n\
@@ -173,7 +172,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      </div>\n\
 \      <div class=\"kpis\" id=\"kpis\"></div>\n\
 \    </section>\n\
-\n\
 \    <section class=\"card\" style=\"grid-column: span 7;\">\n\
 \      <div class=\"section-title\">\n\
 \        <h2>Handlers (All calls)</h2>\n\
@@ -183,7 +181,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        <table class=\"table\" id=\"handlersTable\"></table>\n\
 \      </div>\n\
 \    </section>\n\
-\n\
 \    <section class=\"card\" style=\"grid-column: span 5;\">\n\
 \      <div class=\"section-title\">\n\
 \        <h2>Cheatcode Stats</h2>\n\
@@ -192,7 +189,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        <table class=\"table\" id=\"cheatTable\"></table>\n\
 \      </div>\n\
 \    </section>\n\
-\n\
 \    <section class=\"card\" style=\"grid-column: span 7;\">\n\
 \      <div class=\"section-title\">\n\
 \        <h2>Logical Coverage</h2>\n\
@@ -202,7 +198,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        <table class=\"table\" id=\"logicalTable\"></table>\n\
 \      </div>\n\
 \    </section>\n\
-\n\
 \    <section class=\"card\" style=\"grid-column: span 5;\">\n\
 \      <div class=\"section-title\">\n\
 \        <h2>Coverage Summary</h2>\n\
@@ -217,7 +212,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        <table class=\"table\" id=\"coverageTable\"></table>\n\
 \      </div>\n\
 \    </section>\n\
-\n\
 \    <section class=\"card\" style=\"grid-column: span 12;\">\n\
 \      <div class=\"split\">\n\
 \        <div>\n\
@@ -238,7 +232,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        </div>\n\
 \      </div>\n\
 \    </section>\n\
-\n\
 \    <section class=\"card\" style=\"grid-column: span 12;\">\n\
 \      <div class=\"section-title\">\n\
 \        <h2>Events Stream</h2>\n\
@@ -249,7 +242,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      </div>\n\
 \    </section>\n\
 \  </div>\n\
-\n\
 \  <script>\n\
 \    const API = '/mcp';\n\
 \    let lastEventId = 0;\n\
@@ -257,9 +249,7 @@ mcpDashboardHtml = "<!doctype html>\n\
 \    let lastTraceId = 0;\n\
 \    let traceById = new Map();\n\
 \    let coverageLines = null;\n\
-\n\
 \    const qs = (s) => document.querySelector(s);\n\
-\n\
 \    async function mcp(method, params) {\n\
 \      const body = JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params });\n\
 \      const res = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });\n\
@@ -267,24 +257,20 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      if (json.error) throw new Error(json.error.message || 'MCP error');\n\
 \      return json.result;\n\
 \    }\n\
-\n\
 \    async function readResource(uri) {\n\
 \      const result = await mcp('resources/read', { uri });\n\
 \      const text = result?.contents?.[0]?.text;\n\
 \      if (!text) return {};\n\
 \      try { return JSON.parse(text); } catch { return {}; }\n\
 \    }\n\
-\n\
 \    async function callTool(name, args = {}) {\n\
 \      return mcp('tools/call', { name, arguments: args });\n\
 \    }\n\
-\n\
 \    function setConn(ok, msg) {\n\
 \      const badge = qs('#connBadge');\n\
 \      badge.textContent = msg;\n\
 \      badge.style.borderColor = ok ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)';\n\
 \    }\n\
-\n\
 \    function renderKpis(status) {\n\
 \      const kpis = qs('#kpis');\n\
 \      const c = status.counters || {};\n\
@@ -306,7 +292,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      `).join('');\n\
 \      qs('#phaseBadge').textContent = `phase: ${status.phase || 'unknown'}`;\n\
 \    }\n\
-\n\
 \    function renderHandlers(handlers) {\n\
 \      const search = qs('#handlerSearch').value.toLowerCase();\n\
 \      const rows = Object.entries(handlers || {})\n\
@@ -327,7 +312,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        ${rows || '<tr><td colspan=\"6\" class=\"muted\">No handlers recorded yet.</td></tr>'}\n\
 \      `;\n\
 \    }\n\
-\n\
 \    function renderCheatStats(stats) {\n\
 \      const rows = (stats || [])\n\
 \        .sort((a,b) => (b.totalCalls||0) - (a.totalCalls||0))\n\
@@ -344,7 +328,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        ${rows || '<tr><td colspan=\"4\" class=\"muted\">No cheatcode stats yet.</td></tr>'}\n\
 \      `;\n\
 \    }\n\
-\n\
 \    function renderLogicalCoverage(coverage) {\n\
 \      const methods = coverage.methods || {};\n\
 \      const search = qs('#logicalSearch').value.toLowerCase();\n\
@@ -369,14 +352,12 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        ${rows || '<tr><td colspan=\"3\" class=\"muted\">No logical coverage yet.</td></tr>'}\n\
 \      `;\n\
 \    }\n\
-\n\
 \    function renderCoverageSummary(summary) {\n\
 \      qs('#coverageSummary').innerHTML = `\n\
 \        <div class=\"kpi\"><div class=\"label\">Coverage Points</div><div class=\"value\">${summary.points ?? 0}</div></div>\n\
 \        <div class=\"kpi\"><div class=\"label\">Unique Codehashes</div><div class=\"value\">${summary.uniqueCodehashes ?? 0}</div></div>\n\
 \      `;\n\
 \    }\n\
-\n\
 \    function renderCoverageLines() {\n\
 \      if (!coverageLines) return;\n\
 \      const fileSelect = qs('#coverageFile');\n\
@@ -395,7 +376,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        ${rows || '<tr><td colspan=\"2\" class=\"muted\">No lines to show.</td></tr>'}\n\
 \      `;\n\
 \    }\n\
-\n\
 \    function renderEvents(events) {\n\
 \      const rows = (events || []).map(ev => `\n\
 \        <tr>\n\
@@ -407,7 +387,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      qs('#eventsTable').insertAdjacentHTML('afterbegin', rows);\n\
 \      qs('#eventCount').textContent = String(Number(qs('#eventCount').textContent || 0) + (events || []).length);\n\
 \    }\n\
-\n\
 \    function renderReverts(reverts) {\n\
 \      const rows = (reverts || []).map(rv => {\n\
 \        const trace = rv.traceId != null ? `<button class=\"btn\" data-trace=\"${rv.traceId}\">Trace</button>` : '';\n\
@@ -424,7 +403,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      qs('#revertTable').insertAdjacentHTML('afterbegin', rows);\n\
 \      qs('#revertCount').textContent = String(Number(qs('#revertCount').textContent || 0) + (reverts || []).length);\n\
 \    }\n\
-\n\
 \    function wireTraceButtons() {\n\
 \      qs('#revertTable').addEventListener('click', (e) => {\n\
 \        const btn = e.target.closest('button[data-trace]');\n\
@@ -435,7 +413,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        qs('#traceBadge').textContent = `trace ${id}`;\n\
 \      });\n\
 \    }\n\
-\n\
 \    async function refreshStatic() {\n\
 \      const [status, handlers, logical, coverageSummary, cheat] = await Promise.all([\n\
 \        readResource('echidna://run/status'),\n\
@@ -450,7 +427,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      renderCoverageSummary(coverageSummary);\n\
 \      renderCheatStats(cheat.stats || []);\n\
 \    }\n\
-\n\
 \    async function refreshCoverageLinesOnce() {\n\
 \      if (coverageLines) return;\n\
 \      const lines = await readResource('echidna://coverage/lines');\n\
@@ -459,27 +435,23 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      fileSelect.innerHTML = Object.keys(coverageLines).map(f => `<option value=\"${f}\">${f}</option>`).join('');\n\
 \      renderCoverageLines();\n\
 \    }\n\
-\n\
 \    async function refreshStreams() {\n\
 \      const events = await readResource(`echidna://run/events?since=${lastEventId}&limit=200`);\n\
 \      if (events.events?.length) {\n\
 \        lastEventId = Math.max(...events.events.map(e => e.id || 0), lastEventId);\n\
 \        renderEvents(events.events);\n\
 \      }\n\
-\n\
 \      const traces = await readResource(`echidna://run/traces?since=${lastTraceId}&limit=200`);\n\
 \      if (traces.traces?.length) {\n\
 \        lastTraceId = Math.max(...traces.traces.map(t => t.id || 0), lastTraceId);\n\
 \        traces.traces.forEach(t => traceById.set(t.id, t));\n\
 \      }\n\
-\n\
 \      const reverts = await readResource(`echidna://run/reverts?since=${lastRevertId}&limit=200`);\n\
 \      if (reverts.reverts?.length) {\n\
 \        lastRevertId = Math.max(...reverts.reverts.map(r => r.id || 0), lastRevertId);\n\
 \        renderReverts(reverts.reverts);\n\
 \      }\n\
 \    }\n\
-\n\
 \    async function refreshAll() {\n\
 \      try {\n\
 \        await refreshStatic();\n\
@@ -490,7 +462,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        setConn(false, 'Disconnected');\n\
 \      }\n\
 \    }\n\
-\n\
 \    let timer = null;\n\
 \    function schedule() {\n\
 \      if (timer) clearInterval(timer);\n\
@@ -498,7 +469,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      const sec = Math.max(1, Number(qs('#interval').value) || 3);\n\
 \      timer = setInterval(refreshAll, sec * 1000);\n\
 \    }\n\
-\n\
 \    qs('#refreshBtn').addEventListener('click', refreshAll);\n\
 \    qs('#autoRefresh').addEventListener('change', schedule);\n\
 \    qs('#interval').addEventListener('change', schedule);\n\
@@ -506,11 +476,9 @@ mcpDashboardHtml = "<!doctype html>\n\
 \    qs('#logicalSearch').addEventListener('input', refreshStatic);\n\
 \    qs('#coverageFile').addEventListener('change', renderCoverageLines);\n\
 \    qs('#hitsOnly').addEventListener('change', renderCoverageLines);\n\
-\n\
 \    qs('#pauseBtn').addEventListener('click', () => callTool('pause'));\n\
 \    qs('#resumeBtn').addEventListener('click', () => callTool('resume'));\n\
 \    qs('#stopBtn').addEventListener('click', () => callTool('stop'));\n\
-\n\
 \    wireTraceButtons();\n\
 \    refreshAll();\n\
 \    schedule();\n\

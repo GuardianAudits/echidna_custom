@@ -239,7 +239,7 @@ execTxWithCov tx = do
   (grew, lastLoc) <- liftIO $ readIORef covContextRef
 
   -- Update the last valid location with the transaction result
-  grew' <- liftIO $ case lastLoc of
+  grew' <- liftIO (case lastLoc of
     Just (vec, pc) -> do
       let txResultBit = fromEnum $ getResult r
       VMut.read vec pc >>= \case
@@ -248,6 +248,7 @@ execTxWithCov tx = do
           pure True -- we count this as new coverage
         _ -> pure False
     _ -> pure False
+    )
 
   pure (r, grew || grew')
   where

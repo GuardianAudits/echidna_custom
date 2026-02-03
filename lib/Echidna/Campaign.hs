@@ -8,7 +8,7 @@ import Control.DeepSeq (force)
 import Control.Monad (replicateM, when, unless, void, forM_)
 import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.Random.Strict (MonadRandom, RandT, evalRandT)
-import Control.Monad.Reader (MonadReader, asks, liftIO, ask)
+import Control.Monad.Reader (MonadReader, asks, liftIO, ask, runReaderT)
 import Control.Monad.State.Strict
   (MonadState(..), StateT(..), gets, MonadIO, modify')
 import Control.Monad.Trans (lift)
@@ -38,6 +38,7 @@ import Echidna.ABI
 import Echidna.Events (extractEventValues)
 import Echidna.Exec
 import Echidna.LogicalCoverage (emptyLogicalCoverage, updateLogicalCoverage)
+import Echidna.MCP (recordTx, recordLogicalCoverage, recordCheatStats, mcpCheckpoint)
 import Echidna.Mutator.Corpus
 import Echidna.Shrink (shrinkTest)
 import Echidna.Solidity (chooseContract)
@@ -357,55 +358,60 @@ runFuzzWorker callback vm dict workerId initialCorpus testLimit = do
 
   where
   run = do
-    testRefs <- asks (.testRefs)
-    tests <- liftIO $ traverse readIORef testRefs
-    CampaignConf{stopOnFail, shrinkLimit} <- asks (.cfg.campaignConf)
-    ncalls <- gets (.ncalls)
+    env <- ask
+    shouldStop <- liftIO $ mcpCheckpoint env
+    if shouldStop then
+      lift callback >> pure (Killed "MCP stop requested")
+    else do
+      testRefs <- asks (.testRefs)
+      tests <- liftIO $ traverse readIORef testRefs
+      CampaignConf{stopOnFail, shrinkLimit} <- asks (.cfg.campaignConf)
+      ncalls <- gets (.ncalls)
 
-    let
-      shrinkable test =
-        case test.state of
-          -- we shrink only tests which were solved on this
-          -- worker, see 'updateOpenTest'
-          Large n | test.workerId == Just workerId ->
-            n < shrinkLimit
-          _       -> False
+      let
+        shrinkable test =
+          case test.state of
+            -- we shrink only tests which were solved on this
+            -- worker, see 'updateOpenTest'
+            Large n | test.workerId == Just workerId ->
+              n < shrinkLimit
+            _       -> False
 
-      final test =
-        case test.state of
-          Solved   -> True
-          Failed _ -> True
-          _        -> False
+        final test =
+          case test.state of
+            Solved   -> True
+            Failed _ -> True
+            _        -> False
 
-      closeOptimizationTest test =
-        case test.testType of
-          OptimizationTest _ _ ->
-            test { Test.state = Large 0
-                 , workerId = Just workerId
-                 }
-          _ -> test
+        closeOptimizationTest test =
+          case test.testType of
+            OptimizationTest _ _ ->
+              test { Test.state = Large 0
+                   , workerId = Just workerId
+                   }
+            _ -> test
 
-    if | stopOnFail && any final tests ->
-         lift callback >> pure FastFailed
+      if | stopOnFail && any final tests ->
+           lift callback >> pure FastFailed
 
-       -- we shrink first before going back to fuzzing
-       | any shrinkable tests ->
-         shrink >> lift callback >> run
+         -- we shrink first before going back to fuzzing
+         | any shrinkable tests ->
+           shrink >> lift callback >> run
 
-       -- no shrinking work, fuzz
-       | (null tests || any isOpen tests) && ncalls < testLimit ->
-         fuzz >> lift callback >> run
+         -- no shrinking work, fuzz
+         | (null tests || any isOpen tests) && ncalls < testLimit ->
+           fuzz >> lift callback >> run
 
-       -- NOTE: this is a hack which forces shrinking of optimization tests
-       -- after test limit is reached
-       | ncalls >= testLimit && any (\t -> isOpen t && isOptimizationTest t) tests -> do
-         liftIO $ forM_ testRefs $ \testRef ->
-            atomicModifyIORef' testRef (\test -> (closeOptimizationTest test, ()))
-         lift callback >> run
+         -- NOTE: this is a hack which forces shrinking of optimization tests
+         -- after test limit is reached
+         | ncalls >= testLimit && any (\t -> isOpen t && isOptimizationTest t) tests -> do
+           liftIO $ forM_ testRefs $ \testRef ->
+              atomicModifyIORef' testRef (\test -> (closeOptimizationTest test, ()))
+           lift callback >> run
 
-       -- no more work to do, means we reached the test limit, exit
-       | otherwise ->
-         lift callback >> pure TestLimitReached
+         -- no more work to do, means we reached the test limit, exit
+         | otherwise ->
+           lift callback >> pure TestLimitReached
 
   fuzz = randseq vm.env.contracts >>= fmap fst . callseq vm
 
@@ -591,48 +597,58 @@ evalSeq
   -> m ([(Tx, VMResult Concrete)], VM Concrete)
 evalSeq vm0 execFunc = go vm0 [] where
   go vm executedSoFar toExecute = do
-    -- NOTE: we do reverse here because we build up this list by prepending,
-    -- see the last line of this function.
-    updateTests (updateOpenTest vm (reverse executedSoFar))
-    modify' $ \workerState -> workerState { ncalls = workerState.ncalls + 1 }
-    case toExecute of
-      [] -> pure ([], vm)
-      (tx:remainingTxs) -> do
-        (result, vm') <- execFunc vm tx
-        enabled <- asks (.cfg.campaignConf.logicalCoverage)
-        when enabled $ do
-          maxReasons <- asks (.cfg.campaignConf.logicalCoverageMaxReasons)
-          updated <- updateLogicalCoverage maxReasons vm' tx result =<< gets (.logicalCoverage)
-          modify' $ \WorkerState
-            { workerId
-            , genDict
-            , newCoverage
-            , ncallseqs
-            , ncalls
-            , totalGas
-            , cheatCallStats
-            , runningThreads
-            } ->
-              WorkerState
-                { workerId = workerId
-                , genDict = genDict
-                , newCoverage = newCoverage
-                , ncallseqs = ncallseqs
-                , ncalls = ncalls
-                , totalGas = totalGas
-                , cheatCallStats = cheatCallStats
-                , logicalCoverage = updated
-                , runningThreads = runningThreads
-                }
-        modify' $ \workerState -> workerState
-          { totalGas = workerState.totalGas + fromIntegral (vm'.burned - vm.burned)
-          , cheatCallStats = vm'.cheatCallStats
-          }
-        -- NOTE: we don't use the intermediate VMs, just the last one. If any of
-        -- the intermediate VMs are needed, they can be put next to the result
-        -- of each transaction - `m ([(Tx, result, VM)])`
-        (remaining, vm'') <- go vm' (tx:executedSoFar) remainingTxs
-        pure ((tx, result) : remaining, vm'')
+    env <- ask
+    shouldStop <- liftIO $ mcpCheckpoint env
+    if shouldStop then
+      pure ([], vm)
+    else do
+      -- NOTE: we do reverse here because we build up this list by prepending,
+      -- see the last line of this function.
+      updateTests (updateOpenTest vm (reverse executedSoFar))
+      modify' $ \workerState -> workerState { ncalls = workerState.ncalls + 1 }
+      case toExecute of
+        [] -> pure ([], vm)
+        (tx:remainingTxs) -> do
+          (result, vm') <- execFunc vm tx
+          forM_ env.mcpState $ \st -> recordTx st vm' tx result
+          enabled <- asks (.cfg.campaignConf.logicalCoverage)
+          when enabled $ do
+            maxReasons <- asks (.cfg.campaignConf.logicalCoverageMaxReasons)
+            updated <- updateLogicalCoverage maxReasons vm' tx result =<< gets (.logicalCoverage)
+            modify' $ \WorkerState
+              { workerId
+              , genDict
+              , newCoverage
+              , ncallseqs
+              , ncalls
+              , totalGas
+              , cheatCallStats
+              , runningThreads
+              } ->
+                WorkerState
+                  { workerId = workerId
+                  , genDict = genDict
+                  , newCoverage = newCoverage
+                  , ncallseqs = ncallseqs
+                  , ncalls = ncalls
+                  , totalGas = totalGas
+                  , cheatCallStats = cheatCallStats
+                  , logicalCoverage = updated
+                  , runningThreads = runningThreads
+                  }
+            wid <- gets (.workerId)
+            forM_ env.mcpState $ \st -> recordLogicalCoverage st wid updated
+          modify' $ \workerState -> workerState
+            { totalGas = workerState.totalGas + fromIntegral (vm'.burned - vm.burned)
+            , cheatCallStats = vm'.cheatCallStats
+            }
+          wid <- gets (.workerId)
+          forM_ env.mcpState $ \st -> recordCheatStats st wid vm'.cheatCallStats
+          -- NOTE: we don't use the intermediate VMs, just the last one. If any of
+          -- the intermediate VMs are needed, they can be put next to the result
+          -- of each transaction - `m ([(Tx, result, VM)])`
+          (remaining, vm'') <- go vm' (tx:executedSoFar) remainingTxs
+          pure ((tx, result) : remaining, vm'')
 
 -- | Update tests based on the return value from the given function.
 -- Nothing skips the update.
@@ -721,13 +737,15 @@ spawnListener handler = do
   eventQueue <- asks (.eventQueue)
   chan <- liftIO $ dupChan eventQueue
   stopVar <- liftIO newEmptyMVar
-  liftIO $ void $ forkFinally (listenerLoop handler chan nworkers) (const $ putMVar stopVar ())
+  env <- ask
+  let handler' ev = liftIO (handler ev)
+  liftIO $ void $ forkFinally (runReaderT (listenerLoop handler' chan nworkers) env) (const $ putMVar stopVar ())
   pure stopVar
 
 -- | Repeatedly run 'handler' on events from 'chan'.
 -- Stops once 'workersAlive' workers stop.
 listenerLoop
-  :: (MonadIO m)
+  :: (MonadReader Env m, MonadIO m)
   => ((LocalTime, CampaignEvent) -> m ())
   -- ^ a function that handles the events
   -> Chan (LocalTime, CampaignEvent)
@@ -737,8 +755,11 @@ listenerLoop
   -> m ()
 listenerLoop handler chan !workersAlive =
   when (workersAlive > 0) $ do
-    event <- liftIO $ readChan chan
-    handler event
-    case event of
-      (_, WorkerEvent _ _ (WorkerStopped _)) -> listenerLoop handler chan (workersAlive - 1)
-      _                                      -> listenerLoop handler chan workersAlive
+    env <- ask
+    shouldStop <- liftIO $ mcpCheckpoint env
+    unless shouldStop $ do
+      event <- liftIO $ readChan chan
+      handler event
+      case event of
+        (_, WorkerEvent _ _ (WorkerStopped _)) -> listenerLoop handler chan (workersAlive - 1)
+        _                                      -> listenerLoop handler chan workersAlive

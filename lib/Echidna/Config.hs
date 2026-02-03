@@ -55,6 +55,7 @@ instance FromJSON EConfigWithUsage where
               <*> testConfParser
               <*> txConfParser
               <*> (UIConf <$> v ..:? "timeout" <*> formatParser)
+              <*> mcpConfParser
               <*> v ..:? "allEvents" ..!= False
               <*> v ..:? "rpcUrl"
               <*> v ..:? "rpcBlock"
@@ -157,6 +158,20 @@ instance FromJSON EConfigWithUsage where
       names :: Names
       names Sender = (" from: " ++) . show
       names _      = const ""
+
+      mcpConfParser = v ..:? "mcp" >>= \case
+        Nothing -> pure defaultMCPConf
+        Just mv -> lift $ withObject "mcp" (\mcpObj ->
+          MCPConf
+            <$> mcpObj .:? "enabled" .!= defaultMCPConf.enabled
+            <*> mcpObj .:? "transport" .!= defaultMCPConf.transport
+            <*> mcpObj .:? "host" .!= defaultMCPConf.host
+            <*> mcpObj .:? "port" .!= defaultMCPConf.port
+            <*> mcpObj .:? "socketPath" .!= defaultMCPConf.socketPath
+            <*> mcpObj .:? "maxEvents" .!= defaultMCPConf.maxEvents
+            <*> mcpObj .:? "maxReverts" .!= defaultMCPConf.maxReverts
+            <*> mcpObj .:? "maxTxs" .!= defaultMCPConf.maxTxs
+          ) mv
 
       formatParser = fromMaybe Interactive <$> (v ..:? "format" >>= \case
         Just ("text" :: String) -> pure . Just . NonInteractive $ Text
