@@ -100,12 +100,14 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      border-collapse: collapse;\n\
 \      font-size: 12px;\n\
 \    }\n\
+\    .table thead th { position: sticky; top: 0; background: rgba(11,17,27,0.95); z-index: 1; }\n\
 \    .table th, .table td {\n\
 \      border-bottom: 1px solid var(--grid);\n\
 \      padding: 6px 8px;\n\
 \      text-align: left;\n\
 \      vertical-align: top;\n\
 \    }\n\
+\    .num { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace; }\n\
 \    #logicalTable { table-layout: fixed; }\n\
 \    #logicalTable th:nth-child(1), #logicalTable td:nth-child(1) { width: 55%; }\n\
 \    #logicalTable th:nth-child(2), #logicalTable td:nth-child(2) { width: 15%; }\n\
@@ -554,6 +556,11 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      `;\n\
 \      renderCoverageTopFiles(stats.perFile);\n\
 \    }\n\
+\    function formatNumber(v) {\n\
+\      if (v == null) return '';\n\
+\      const n = Number(v);\n\
+\      return Number.isFinite(n) ? n.toLocaleString() : String(v);\n\
+\    }\n\
 \    function renderCoverageLines() {\n\
 \      if (!coverageLines) return;\n\
 \      const fileSelect = qs('#coverageFile');\n\
@@ -565,11 +572,13 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        .sort((a,b) => Number(a[0]) - Number(b[0]))\n\
 \        .slice(0, 500)\n\
 \        .map(([line,hits]) => `\n\
-\          <tr><td>${line}</td><td>${hits}</td></tr>\n\
+\          <tr><td class=\"num\">${line}</td><td class=\"num\">${formatNumber(hits)}</td></tr>\n\
 \        `).join('');\n\
 \      qs('#coverageTable').innerHTML = `\n\
-\        <tr><th>Line</th><th>Hits</th></tr>\n\
+\        <thead><tr><th class=\"num\">Line</th><th class=\"num\">Hits</th></tr></thead>\n\
+\        <tbody>\n\
 \        ${rows || '<tr><td colspan=\"2\" class=\"muted\">No lines to show.</td></tr>'}\n\
+\        </tbody>\n\
 \      `;\n\
 \    }\n\
 \    function renderEvents(events) {\n\
