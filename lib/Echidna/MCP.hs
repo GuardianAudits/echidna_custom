@@ -244,6 +244,7 @@ resourcesListResult = object
       , resource "echidna://run/txs" "Transactions"
       , resource "echidna://run/handlers" "Handlers"
       , resource "echidna://run/traces" "Traces"
+      , resource "echidna://run/trace" "Trace (by id)"
       , resource "echidna://coverage/summary" "Coverage summary"
       , resource "echidna://coverage/lines" "Coverage line hits"
       , resource "echidna://stats/cheatcodes" "Cheatcode stats"
@@ -355,6 +356,7 @@ readResource env st uri = do
     "echidna://run/txs" -> runTxs st query
     "echidna://run/handlers" -> runHandlers st
     "echidna://run/traces" -> runTraces st query
+    "echidna://run/trace" -> runTrace st query
     "echidna://coverage/summary" -> coverageSummary env
     "echidna://coverage/lines" -> coverageLines env
     "echidna://stats/cheatcodes" -> cheatStats st
@@ -433,6 +435,15 @@ runTraces st query = do
       limit = readQueryInt "limit" 200 query
   entries <- readSince st.traces since limit
   pure $ object ["traces" .= map (\(_, r) -> r) entries]
+
+runTrace :: MCPState -> Map Text Text -> IO Value
+runTrace st query = do
+  let tid = readQueryInt "id" (-1) query
+  if tid < 0
+    then pure $ object ["trace" .= Null]
+    else do
+      m <- readById st.traces tid
+      pure $ object ["trace" .= m]
 
 coverageSummary :: Env -> IO Value
 coverageSummary Env{coverageRefInit, coverageRefRuntime} = do

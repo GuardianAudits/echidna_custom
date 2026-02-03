@@ -403,12 +403,21 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      qs('#revertTable').insertAdjacentHTML('afterbegin', rows);\n\
 \      qs('#revertCount').textContent = String(Number(qs('#revertCount').textContent || 0) + (reverts || []).length);\n\
 \    }\n\
+\    async function fetchTraceById(id) {\n\
+\      if (traceById.has(id)) return traceById.get(id);\n\
+\      const res = await readResource(`echidna://run/trace?id=${id}`);\n\
+\      if (res.trace) {\n\
+\        traceById.set(id, res.trace);\n\
+\        return res.trace;\n\
+\      }\n\
+\      return null;\n\
+\    }\n\
 \    function wireTraceButtons() {\n\
-\      qs('#revertTable').addEventListener('click', (e) => {\n\
+\      qs('#revertTable').addEventListener('click', async (e) => {\n\
 \        const btn = e.target.closest('button[data-trace]');\n\
 \        if (!btn) return;\n\
-\        const id = btn.getAttribute('data-trace');\n\
-\        const trace = traceById.get(Number(id));\n\
+\        const id = Number(btn.getAttribute('data-trace'));\n\
+\        const trace = await fetchTraceById(id);\n\
 \        qs('#traceView').textContent = trace?.trace || 'Trace not found.';\n\
 \        qs('#traceBadge').textContent = `trace ${id}`;\n\
 \      });\n\
@@ -440,11 +449,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      if (events.events?.length) {\n\
 \        lastEventId = Math.max(...events.events.map(e => e.id || 0), lastEventId);\n\
 \        renderEvents(events.events);\n\
-\      }\n\
-\      const traces = await readResource(`echidna://run/traces?since=${lastTraceId}&limit=200`);\n\
-\      if (traces.traces?.length) {\n\
-\        lastTraceId = Math.max(...traces.traces.map(t => t.id || 0), lastTraceId);\n\
-\        traces.traces.forEach(t => traceById.set(t.id, t));\n\
 \      }\n\
 \      const reverts = await readResource(`echidna://run/reverts?since=${lastRevertId}&limit=200`);\n\
 \      if (reverts.reverts?.length) {\n\

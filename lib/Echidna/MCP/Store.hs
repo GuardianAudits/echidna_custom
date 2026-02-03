@@ -3,6 +3,7 @@ module Echidna.MCP.Store
   , newRingBuffer
   , pushRing
   , readSince
+  , readById
   , MCPState(..)
   , MCPControl(..)
   , newMCPState
@@ -58,6 +59,11 @@ readSince ref since limit = do
   pure $ take limit entries
   where
     toList = Foldable.toList
+
+readById :: IORef (RingBuffer a) -> Int -> IO (Maybe a)
+readById ref target = do
+  rb <- readIORef ref
+  pure $ lookup target (Foldable.toList rb.items)
 
 data MCPControl = MCPControl
   { pauseGate :: MVar ()
