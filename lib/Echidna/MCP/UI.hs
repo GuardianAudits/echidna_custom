@@ -452,15 +452,21 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        renderReverts(reverts.reverts);\n\
 \      }\n\
 \    }\n\
-\    async function refreshAll() {\n\
+\    async function safe(label, fn) {\n\
 \      try {\n\
-\        await refreshStatic();\n\
-\        await refreshCoverageLinesOnce();\n\
-\        await refreshStreams();\n\
-\        setConn(true, 'Connected');\n\
+\        await fn();\n\
+\        return true;\n\
 \      } catch (e) {\n\
-\        setConn(false, 'Disconnected');\n\
+\        console.error(`[mcp:${label}]`, e);\n\
+\        return false;\n\
 \      }\n\
+\    }\n\
+\    async function refreshAll() {\n\
+\      const okStreams = await safe('streams', refreshStreams);\n\
+\      const okStatic = await safe('static', refreshStatic);\n\
+\      await safe('coverage-lines', refreshCoverageLinesOnce);\n\
+\      const ok = okStreams || okStatic;\n\
+\      setConn(ok, ok ? 'Connected' : 'Disconnected');\n\
 \    }\n\
 \    let timer = null;\n\
 \    function schedule() {\n\
