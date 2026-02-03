@@ -200,9 +200,15 @@ mcpDashboardHtml = "<!doctype html>\n\
 \    </section>\n\
 \    <section class=\"card\" style=\"grid-column: span 5;\">\n\
 \      <div class=\"section-title\">\n\
-\        <h2>Coverage Summary</h2>\n\
+\        <h2>Line Coverage</h2>\n\
 \      </div>\n\
 \      <div id=\"coverageSummary\" class=\"grid\"></div>\n\
+\      <div style=\"margin-top:12px;\" class=\"section-title\">\n\
+\        <h2>Top Files (Least Covered)</h2>\n\
+\      </div>\n\
+\      <div style=\"max-height:200px; overflow:auto; margin-top:8px;\">\n\
+\        <table class=\"table\" id=\"coverageTopFiles\"></table>\n\
+\      </div>\n\
 \      <div style=\"margin-top:12px;\" class=\"section-title\">\n\
 \        <h2>Coverage Hits</h2>\n\
 \      </div>\n\
@@ -244,11 +250,20 @@ mcpDashboardHtml = "<!doctype html>\n\
 \  </div>\n\
 \  <script>\n\
 \    const API = '/mcp';\n\
+\    const REVERT_CACHE_KEY = 'echidna.reverts.v1';\n\
+\    const MAX_REVERTS = 500;\n\
+\    const REVERT_BACKFILL_LIMIT = MAX_REVERTS * 4;\n\
+\    const COVERAGE_LINES_REFRESH_SEC = 15;\n\
 \    let lastEventId = 0;\n\
 \    let lastRevertId = 0;\n\
 \    let lastTraceId = 0;\n\
+\    let lastTotalCalls = null;\n\
 \    let traceById = new Map();\n\
 \    let coverageLines = null;\n\
+\    let lastCoverageLinesFetch = 0;\n\
+\    let revertItems = [];\n\
+\    let revertIdSet = new Set();\n\
+\    let didBackfillReverts = false;\n\
 \    const qs = (s) => document.querySelector(s);\n\
 \    async function mcp(method, params) {\n\
 \      const body = JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params });\n\
@@ -265,6 +280,105 @@ mcpDashboardHtml = "<!doctype html>\n\
 \    }\n\
 \    async function callTool(name, args = {}) {\n\
 \      return mcp('tools/call', { name, arguments: args });\n\
+\    }\n\
+\    function normalizeRevert(rv) {\n\
+\      if (!rv) return null;\n\
+\      const rawId = rv.id ?? rv.revertId;\n\
+\      const id = Number(rawId);\n\
+\      if (!Number.isFinite(id)) return null;\n\
+\      return {\n\
+\        id,\n\
+\        ts: rv.ts || '',\n\
+\        reason: rv.reason || '',\n\
+\        selector: rv.selector || '',\n\
+\        contract: rv.contract || '',\n\
+\        traceId: rv.traceId ?? null,\n\
+\      };\n\
+\    }\n\
+\    function renderRevertTable() {\n\
+\      const rows = revertItems.map(rv => {\n\
+\        const trace = rv.traceId != null ? `<button class=\"btn\" data-trace=\"${rv.traceId}\">Trace</button>` : '';\n\
+\        return `\n\
+\          <tr>\n\
+\            <td>${rv.ts || ''}</td>\n\
+\            <td><span class=\"pill bad\">${rv.reason || ''}</span></td>\n\
+\            <td class=\"muted\">${rv.selector || ''}</td>\n\
+\            <td class=\"muted\">${rv.contract || ''}</td>\n\
+\            <td>${trace}</td>\n\
+\          </tr>\n\
+\        `;\n\
+\      }).join('');\n\
+\      qs('#revertTable').innerHTML = rows || '<tr><td colspan=\"5\" class=\"muted\">No reverts yet.</td></tr>';\n\
+\      qs('#revertCount').textContent = String(revertItems.length);\n\
+\    }\n\
+\    function saveRevertCache() {\n\
+\      try {\n\
+\        const payload = { items: revertItems, totalCalls: lastTotalCalls };\n\
+\        localStorage.setItem(REVERT_CACHE_KEY, JSON.stringify(payload));\n\
+\      } catch {}\n\
+\    }\n\
+\    function loadRevertCache() {\n\
+\      try {\n\
+\        const raw = localStorage.getItem(REVERT_CACHE_KEY);\n\
+\        if (!raw) return { items: [], totalCalls: null };\n\
+\        const parsed = JSON.parse(raw);\n\
+\        if (Array.isArray(parsed)) return { items: parsed, totalCalls: null };\n\
+\        if (!parsed || !Array.isArray(parsed.items)) return { items: [], totalCalls: null };\n\
+\        const totalCalls = Number.isFinite(parsed.totalCalls) ? parsed.totalCalls : null;\n\
+\        return { items: parsed.items, totalCalls };\n\
+\      } catch {\n\
+\        return { items: [], totalCalls: null };\n\
+\      }\n\
+\    }\n\
+\    function resetReverts() {\n\
+\      revertItems = [];\n\
+\      revertIdSet = new Set();\n\
+\      lastRevertId = 0;\n\
+\      didBackfillReverts = false;\n\
+\      renderRevertTable();\n\
+\      saveRevertCache();\n\
+\    }\n\
+\    function addReverts(reverts, opts = {}) {\n\
+\      const { render = true, persist = true } = opts;\n\
+\      let changed = false;\n\
+\      (reverts || []).forEach((rv) => {\n\
+\        const item = normalizeRevert(rv);\n\
+\        if (!item || revertIdSet.has(item.id)) return;\n\
+\        revertIdSet.add(item.id);\n\
+\        revertItems.push(item);\n\
+\        changed = true;\n\
+\      });\n\
+\      if (!changed) return;\n\
+\      revertItems.sort((a,b) => b.id - a.id);\n\
+\      if (revertItems.length > MAX_REVERTS) {\n\
+\        revertItems = revertItems.slice(0, MAX_REVERTS);\n\
+\        revertIdSet = new Set(revertItems.map(r => r.id));\n\
+\      }\n\
+\      if (revertItems.length) {\n\
+\        const maxId = revertItems[0].id;\n\
+\        if (maxId > lastRevertId) lastRevertId = maxId;\n\
+\      }\n\
+\      if (persist) saveRevertCache();\n\
+\      if (render) renderRevertTable();\n\
+\    }\n\
+\    function initRevertsFromCache() {\n\
+\      const cache = loadRevertCache();\n\
+\      if (Number.isFinite(cache.totalCalls)) lastTotalCalls = cache.totalCalls;\n\
+\      if (cache.items.length) {\n\
+\        addReverts(cache.items, { render: true, persist: false });\n\
+\      } else {\n\
+\        renderRevertTable();\n\
+\      }\n\
+\    }\n\
+\    async function backfillRevertsOnce() {\n\
+\      if (didBackfillReverts) return;\n\
+\      const reverts = await readResource(`echidna://run/reverts?since=-1&limit=${REVERT_BACKFILL_LIMIT}`);\n\
+\      if (reverts.reverts?.length) {\n\
+\        addReverts(reverts.reverts, { render: true, persist: true });\n\
+\      } else {\n\
+\        renderRevertTable();\n\
+\      }\n\
+\      didBackfillReverts = true;\n\
 \    }\n\
 \    function setConn(ok, msg) {\n\
 \      const badge = qs('#connBadge');\n\
@@ -291,6 +405,13 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        </div>\n\
 \      `).join('');\n\
 \      qs('#phaseBadge').textContent = `phase: ${status.phase || 'unknown'}`;\n\
+\      const totalCalls = c.totalCalls ?? 0;\n\
+\      const maxCachedRevertId = revertItems.length ? revertItems[0].id : null;\n\
+\      const staleCache = lastTotalCalls == null && maxCachedRevertId != null && totalCalls < maxCachedRevertId;\n\
+\      if ((lastTotalCalls != null && totalCalls < lastTotalCalls) || staleCache) {\n\
+\        resetReverts();\n\
+\      }\n\
+\      lastTotalCalls = totalCalls;\n\
 \    }\n\
 \    function renderHandlers(handlers) {\n\
 \      const search = qs('#handlerSearch').value.toLowerCase();\n\
@@ -352,11 +473,60 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        ${rows || '<tr><td colspan=\"3\" class=\"muted\">No logical coverage yet.</td></tr>'}\n\
 \      `;\n\
 \    }\n\
-\    function renderCoverageSummary(summary) {\n\
-\      qs('#coverageSummary').innerHTML = `\n\
-\        <div class=\"kpi\"><div class=\"label\">Coverage Points</div><div class=\"value\">${summary.points ?? 0}</div></div>\n\
-\        <div class=\"kpi\"><div class=\"label\">Unique Codehashes</div><div class=\"value\">${summary.uniqueCodehashes ?? 0}</div></div>\n\
+\    function computeCoverageStats(linesByFile) {\n\
+\      const perFile = [];\n\
+\      let totalLines = 0;\n\
+\      let coveredLines = 0;\n\
+\      Object.entries(linesByFile || {}).forEach(([file, lines]) => {\n\
+\        if (!lines) return;\n\
+\        const entries = Object.entries(lines);\n\
+\        if (!entries.length) return;\n\
+\        let fileTotal = 0;\n\
+\        let fileCovered = 0;\n\
+\        entries.forEach(([, hits]) => {\n\
+\          fileTotal += 1;\n\
+\          const h = Number(hits) || 0;\n\
+\          if (h > 0) fileCovered += 1;\n\
+\        });\n\
+\        if (fileTotal === 0) return;\n\
+\        const uncovered = fileTotal - fileCovered;\n\
+\        const pct = fileTotal ? (fileCovered / fileTotal) * 100 : 0;\n\
+\        totalLines += fileTotal;\n\
+\        coveredLines += fileCovered;\n\
+\        perFile.push({ file, total: fileTotal, covered: fileCovered, uncovered, pct });\n\
+\      });\n\
+\      const pct = totalLines ? (coveredLines / totalLines) * 100 : 0;\n\
+\      return { totalLines, coveredLines, pct, perFile };\n\
+\    }\n\
+\    function renderCoverageTopFiles(perFile) {\n\
+\      const rows = (perFile || [])\n\
+\        .sort((a, b) => {\n\
+\          if (b.uncovered !== a.uncovered) return b.uncovered - a.uncovered;\n\
+\          if (a.pct !== b.pct) return a.pct - b.pct;\n\
+\          return a.file.localeCompare(b.file);\n\
+\        })\n\
+\        .slice(0, 10)\n\
+\        .map((f) => `\n\
+\          <tr>\n\
+\            <td class=\"muted\">${f.file}</td>\n\
+\            <td>${f.covered}/${f.total}</td>\n\
+\            <td>${f.pct.toFixed(1)}%</td>\n\
+\            <td>${f.uncovered}</td>\n\
+\          </tr>\n\
+\        `).join('');\n\
+\      qs('#coverageTopFiles').innerHTML = `\n\
+\        <tr><th>File</th><th>Covered</th><th>Coverage</th><th>Uncovered</th></tr>\n\
+\        ${rows || '<tr><td colspan=\"4\" class=\"muted\">No coverage data yet.</td></tr>'}\n\
 \      `;\n\
+\    }\n\
+\    function renderCoverageSummary() {\n\
+\      if (!coverageLines) return;\n\
+\      const stats = computeCoverageStats(coverageLines);\n\
+\      qs('#coverageSummary').innerHTML = `\n\
+\        <div class=\"kpi\"><div class=\"label\">Line Coverage</div><div class=\"value\">${stats.pct.toFixed(1)}%</div></div>\n\
+\        <div class=\"kpi\"><div class=\"label\">Covered / Executable</div><div class=\"value\">${stats.coveredLines}/${stats.totalLines}</div></div>\n\
+\      `;\n\
+\      renderCoverageTopFiles(stats.perFile);\n\
 \    }\n\
 \    function renderCoverageLines() {\n\
 \      if (!coverageLines) return;\n\
@@ -388,20 +558,7 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      qs('#eventCount').textContent = String(Number(qs('#eventCount').textContent || 0) + (events || []).length);\n\
 \    }\n\
 \    function renderReverts(reverts) {\n\
-\      const rows = (reverts || []).map(rv => {\n\
-\        const trace = rv.traceId != null ? `<button class=\"btn\" data-trace=\"${rv.traceId}\">Trace</button>` : '';\n\
-\        return `\n\
-\          <tr>\n\
-\            <td>${rv.ts || ''}</td>\n\
-\            <td><span class=\"pill bad\">${rv.reason || ''}</span></td>\n\
-\            <td class=\"muted\">${rv.selector || ''}</td>\n\
-\            <td class=\"muted\">${rv.contract || ''}</td>\n\
-\            <td>${trace}</td>\n\
-\          </tr>\n\
-\        `;\n\
-\      }).join('');\n\
-\      qs('#revertTable').insertAdjacentHTML('afterbegin', rows);\n\
-\      qs('#revertCount').textContent = String(Number(qs('#revertCount').textContent || 0) + (reverts || []).length);\n\
+\      addReverts(reverts);\n\
 \    }\n\
 \    async function fetchTraceById(id) {\n\
 \      if (traceById.has(id)) return traceById.get(id);\n\
@@ -423,26 +580,31 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      });\n\
 \    }\n\
 \    async function refreshStatic() {\n\
-\      const [status, handlers, logical, coverageSummary, cheat] = await Promise.all([\n\
+\      const [status, handlers, logical, cheat] = await Promise.all([\n\
 \        readResource('echidna://run/status'),\n\
 \        readResource('echidna://run/handlers'),\n\
 \        readResource('echidna://stats/logical-coverage'),\n\
-\        readResource('echidna://coverage/summary'),\n\
 \        readResource('echidna://stats/cheatcodes')\n\
 \      ]);\n\
 \      renderKpis(status);\n\
 \      renderHandlers(handlers.handlers || {});\n\
 \      renderLogicalCoverage(logical);\n\
-\      renderCoverageSummary(coverageSummary);\n\
+\      renderCoverageSummary();\n\
 \      renderCheatStats(cheat.stats || []);\n\
 \    }\n\
-\    async function refreshCoverageLinesOnce() {\n\
-\      if (coverageLines) return;\n\
+\    async function refreshCoverageLines() {\n\
+\      const now = Date.now();\n\
+\      if (coverageLines && (now - lastCoverageLinesFetch) < (COVERAGE_LINES_REFRESH_SEC * 1000)) return;\n\
 \      const lines = await readResource('echidna://coverage/lines');\n\
 \      coverageLines = lines || {};\n\
+\      lastCoverageLinesFetch = now;\n\
 \      const fileSelect = qs('#coverageFile');\n\
-\      fileSelect.innerHTML = Object.keys(coverageLines).map(f => `<option value=\"${f}\">${f}</option>`).join('');\n\
+\      const prev = fileSelect.value;\n\
+\      const files = Object.keys(coverageLines);\n\
+\      fileSelect.innerHTML = files.map(f => `<option value=\"${f}\">${f}</option>`).join('');\n\
+\      if (prev && files.includes(prev)) fileSelect.value = prev;\n\
 \      renderCoverageLines();\n\
+\      renderCoverageSummary();\n\
 \    }\n\
 \    async function refreshStreams() {\n\
 \      const events = await readResource(`echidna://run/events?since=${lastEventId}&limit=200`);\n\
@@ -452,7 +614,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      }\n\
 \      const reverts = await readResource(`echidna://run/reverts?since=${lastRevertId}&limit=200`);\n\
 \      if (reverts.reverts?.length) {\n\
-\        lastRevertId = Math.max(...reverts.reverts.map(r => r.id || 0), lastRevertId);\n\
 \        renderReverts(reverts.reverts);\n\
 \      }\n\
 \    }\n\
@@ -468,8 +629,9 @@ mcpDashboardHtml = "<!doctype html>\n\
 \    async function refreshAll() {\n\
 \      const okStreams = await safe('streams', refreshStreams);\n\
 \      const okStatic = await safe('static', refreshStatic);\n\
-\      await safe('coverage-lines', refreshCoverageLinesOnce);\n\
-\      const ok = okStreams || okStatic;\n\
+\      const okBackfill = await safe('reverts-backfill', backfillRevertsOnce);\n\
+\      await safe('coverage-lines', refreshCoverageLines);\n\
+\      const ok = okStreams || okStatic || okBackfill;\n\
 \      setConn(ok, ok ? 'Connected' : 'Disconnected');\n\
 \    }\n\
 \    let timer = null;\n\
@@ -490,6 +652,7 @@ mcpDashboardHtml = "<!doctype html>\n\
 \    qs('#resumeBtn').addEventListener('click', () => callTool('resume'));\n\
 \    qs('#stopBtn').addEventListener('click', () => callTool('stop'));\n\
 \    wireTraceButtons();\n\
+\    initRevertsFromCache();\n\
 \    refreshAll();\n\
 \    schedule();\n\
 \  </script>\n\
