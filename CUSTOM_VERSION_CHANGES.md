@@ -1,4 +1,4 @@
-# Custom HEVM Cheatcodes (Echidna Integration) — Change Log
+# Custom Echidna + HEVM — Change Log
 
 This document summarizes **all custom changes** applied so far in this repo + its paired `hevm` repo, with a focus on the three new cheatcodes:
 
@@ -225,5 +225,104 @@ coverageLineHits: true
 ```bash
 --coverage-line-hits true|false
 ```
+
+---
+
+## 8) MCP Server + Live Dashboard (HTTP)
+
+**Purpose:** Provide a live, queryable view of Echidna runs, reverts, traces, handlers, logical coverage, cheatcode stats, and coverage hits via a local MCP‑style JSON‑RPC server plus a built‑in dashboard.
+
+### What you get
+
+- **Web dashboard** (dark UI) served by Echidna itself  
+  - URL: `http://127.0.0.1:9001/` (default)  
+  - Alias: `http://127.0.0.1:9001/ui`  
+- **JSON‑RPC API** at `POST /mcp`  
+- **Health check** at `GET /health`
+
+### How to enable
+
+**Config file (`echidna.yaml`)**
+```yaml
+mcp:
+  enabled: true
+  transport: http
+  host: "127.0.0.1"
+  port: 9001
+  maxEvents: 5000
+  maxReverts: 1000
+  maxTxs: 1000
+```
+
+**CLI flags**
+```bash
+--mcp true \
+--mcp-transport http \
+--mcp-host 127.0.0.1 \
+--mcp-port 9001 \
+--mcp-max-events 5000 \
+--mcp-max-reverts 1000 \
+--mcp-max-txs 1000
+```
+
+**Defaults**
+- `enabled: false`
+- `transport: http`
+- `host: 127.0.0.1`
+- `port: 9001`
+- `maxEvents: 5000`
+- `maxReverts: 1000`
+- `maxTxs: 1000`
+
+> Note: Only HTTP transport is supported in this custom build.  
+> `unix` and `stdio` are parsed but will switch MCP to `disabled`.
+
+### Dashboard data surfaced
+
+- Run status (phase, worker counts, time, seeds)
+- Handlers (calls + success/failure)
+- Cheatcode stats (per selector)
+- Logical coverage (success rate, arg ranges, revert reasons)
+- Coverage summary + per‑line hit counts
+- Reverts (reason + trace)
+- Events stream
+
+### JSON‑RPC resources available
+
+From `resources/list`:
+- `echidna://run/status`
+- `echidna://run/config`
+- `echidna://run/tests`
+- `echidna://run/events`
+- `echidna://run/reverts`
+- `echidna://run/txs`
+- `echidna://run/handlers`
+- `echidna://run/traces`
+- `echidna://coverage/summary`
+- `echidna://coverage/lines`
+- `echidna://stats/cheatcodes`
+- `echidna://stats/logical-coverage`
+
+### JSON‑RPC tools available
+
+- `pause` / `resume` / `stop`
+- `get_status`, `get_events`, `get_reverts`, `get_handlers`, `get_traces`
+- `get_logical_coverage`, `get_coverage_hits`, `get_cheat_stats`
+
+### Example `curl` usage
+```bash
+curl -s -X POST http://127.0.0.1:9001/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"resources/list"}'
+```
+
+### Phase lifecycle
+
+Typical MCP phases during a run:
+- `starting` → `running`  
+- `paused` (when dashboard Pause is used)  
+- `stopped` (when Stop is used)  
+- `completed` (after run finishes normally)  
+- `disabled` (when MCP is off or transport unsupported)
 
 ---
