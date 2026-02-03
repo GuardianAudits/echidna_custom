@@ -106,6 +106,19 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      text-align: left;\n\
 \      vertical-align: top;\n\
 \    }\n\
+\    #traceView {\n\
+\      margin: 0;\n\
+\      padding: 10px 12px;\n\
+\      background: #0b111b;\n\
+\      border: 1px solid var(--grid);\n\
+\      border-radius: 10px;\n\
+\      max-height: 320px;\n\
+\      overflow: auto;\n\
+\      white-space: pre;\n\
+\      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;\n\
+\      font-size: 12px;\n\
+\      line-height: 1.4;\n\
+\    }\n\
 \    .muted { color: var(--muted); }\n\
 \    .pill {\n\
 \      display: inline-block;\n\
@@ -232,7 +245,10 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        <div>\n\
 \          <div class=\"section-title\">\n\
 \            <h2>Trace</h2>\n\
-\            <span class=\"badge\" id=\"traceBadge\">no trace selected</span>\n\
+\            <div style=\"display:flex; gap:8px; align-items:center;\">\n\
+\              <span class=\"badge\" id=\"traceBadge\">no trace selected</span>\n\
+\              <button class=\"btn\" id=\"copyTraceBtn\" disabled>Copy</button>\n\
+\            </div>\n\
 \          </div>\n\
 \          <pre id=\"traceView\">Select a revert to view its trace.</pre>\n\
 \        </div>\n\
@@ -379,6 +395,10 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        renderRevertTable();\n\
 \      }\n\
 \      didBackfillReverts = true;\n\
+\    }\n\
+\    let currentTraceText = '';\n\
+\    function stripAnsi(text) {\n\
+\      return (text || '').replace(/\\x1b\\[[0-9;]*m/g, '');\n\
 \    }\n\
 \    function setConn(ok, msg) {\n\
 \      const badge = qs('#connBadge');\n\
@@ -575,8 +595,11 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        if (!btn) return;\n\
 \        const id = Number(btn.getAttribute('data-trace'));\n\
 \        const trace = await fetchTraceById(id);\n\
-\        qs('#traceView').textContent = trace?.trace || 'Trace not found.';\n\
+\        const raw = trace?.trace || '';\n\
+\        currentTraceText = raw;\n\
+\        qs('#traceView').textContent = raw ? stripAnsi(raw) : 'Trace not found.';\n\
 \        qs('#traceBadge').textContent = `trace ${id}`;\n\
+\        qs('#copyTraceBtn').disabled = !raw;\n\
 \      });\n\
 \    }\n\
 \    async function refreshStatic() {\n\
@@ -651,6 +674,19 @@ mcpDashboardHtml = "<!doctype html>\n\
 \    qs('#pauseBtn').addEventListener('click', () => callTool('pause'));\n\
 \    qs('#resumeBtn').addEventListener('click', () => callTool('resume'));\n\
 \    qs('#stopBtn').addEventListener('click', () => callTool('stop'));\n\
+\    qs('#copyTraceBtn').addEventListener('click', async () => {\n\
+\      if (!currentTraceText) return;\n\
+\      const cleaned = stripAnsi(currentTraceText);\n\
+\      try {\n\
+\        await navigator.clipboard.writeText(cleaned);\n\
+\        const btn = qs('#copyTraceBtn');\n\
+\        const prev = btn.textContent;\n\
+\        btn.textContent = 'Copied';\n\
+\        setTimeout(() => { btn.textContent = prev; }, 800);\n\
+\      } catch (e) {\n\
+\        console.error('[mcp:copy-trace]', e);\n\
+\      }\n\
+\    });\n\
 \    wireTraceButtons();\n\
 \    initRevertsFromCache();\n\
 \    refreshAll();\n\
