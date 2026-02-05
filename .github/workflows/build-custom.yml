@@ -14,10 +14,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout echidna
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout hevm (custom)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: r0bert-ethack/hevm_custom
           path: hevm
