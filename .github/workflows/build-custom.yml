@@ -26,7 +26,7 @@ jobs:
         uses: nixbuild/nix-quick-install-action@v34
 
       - name: Nix cache
-        uses: nix-community/cache-nix-action@v6
+        uses: nix-community/cache-nix-action@v7
         with:
           primary-key: nix-build-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           purge: true
