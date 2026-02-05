@@ -6,7 +6,7 @@ jobs:
   nixBuild:
     name: Build ${{ matrix.name }} binary
     timeout-minutes: ${{ matrix.timeout || 30 }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     outputs:
@@ -14,24 +14,24 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            name: Linux (x86_64)
+          - name: Linux (x86_64)
             tuple: x86_64-linux
             system: x86_64-linux
             timeout: 180
-          - os: ubuntu-24.04-arm
-            name: Linux (aarch64)
+            runner: [self-hosted, linux, x64]
+          - name: Linux (aarch64)
             tuple: aarch64-linux
             system: aarch64-linux
             timeout: 180
-          - os: macos-14
-            name: macOS (x86_64)
+            runner: [self-hosted, linux, arm64]
+          - name: macOS (x86_64)
             tuple: x86_64-macos
             system: x86_64-darwin
-          - os: macos-14
-            name: macOS (aarch64)
+            runner: [self-hosted, macos, x64]
+          - name: macOS (aarch64)
             tuple: aarch64-macos
             system: aarch64-darwin
+            runner: [self-hosted, macos, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -80,7 +80,7 @@ jobs:
     timeout-minutes: 10
     needs: [nixBuild]
     if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: write
       id-token: write
