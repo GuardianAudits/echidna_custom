@@ -15,7 +15,8 @@ import Control.Monad.State.Strict hiding (state)
 import Data.ByteString.Lazy qualified as BS
 import Data.List.Split (chunksOf)
 import Data.Map (Map)
-import Data.Maybe (isJust, mapMaybe)
+import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust, fromMaybe, mapMaybe)
 import Data.Sequence ((|>))
 import Data.Text (Text)
 import Data.Time
@@ -29,13 +30,16 @@ import UnliftIO
   ( MonadUnliftIO, IORef, newIORef, readIORef, hFlush, stdout , writeIORef, timeout)
 import UnliftIO.Concurrent hiding (killThread, threadDelay)
 
+import EVM.Dapp (DappInfo(..))
 import EVM.Fetch qualified
+import EVM.Solidity (SourceCache, SolcContract)
 import EVM.Types (Addr, Contract, VM, VMType(Concrete), W256)
 
 import Echidna.ABI
 import Echidna.Campaign (runWorker, spawnListener)
 import Echidna.Output.Corpus (saveCorpusEvent)
 import Echidna.Output.JSON qualified
+import Echidna.Output.PeriodicSave (spawnPeriodicSaver)
 import Echidna.LogicalCoverage (mergeLogicalCoverage, formatLogicalStatus)
 import Echidna.Server (runSSEServer)
 import Echidna.SourceAnalysis.Slither (isEmptySlitherInfo)
@@ -71,8 +75,10 @@ ui
   -> GenDict
   -> [(FilePath, [Tx])]
   -> Maybe Text
+  -> Int                   -- ^ Seed for campaign
+  -> SourceCache           -- ^ Source cache for coverage saving
   -> m [WorkerState]
-ui vm dict initialCorpus cliSelectedContract = do
+ui vm dict initialCorpus cliSelectedContract seed sources = do
   env <- ask
   conf <- asks (.cfg)
   terminalPresent <- liftIO isTerminal
@@ -95,6 +101,11 @@ ui vm dict initialCorpus cliSelectedContract = do
     corpusChunks = chunksOf chunkSize initialCorpus ++ repeat []
 
   corpusSaverStopVar <- spawnListener (saveCorpusEvent env)
+
+  -- Spawn periodic coverage saver if configured
+  let corpusDir = fromMaybe "" conf.campaignConf.corpusDir
+      contracts = Map.elems env.dapp.solcByName
+  periodicSaverThreadId <- liftIO $ spawnPeriodicSaver env seed corpusDir sources contracts
 
   workers <- forM (zip corpusChunks [0..(nworkers-1)]) $
     uncurry (spawnWorker env perWorkerTestLimit)
@@ -165,6 +176,11 @@ ui vm dict initialCorpus cliSelectedContract = do
 
       liftIO $ killThread ticker
 
+      -- Stop the periodic saver if it was running
+      case periodicSaverThreadId of
+        Just tid -> liftIO $ killThread tid
+        Nothing -> pure ()
+
       states <- workerStates workers
       liftIO . putStrLn =<< ppCampaign states
 
@@ -206,6 +222,11 @@ ui vm dict initialCorpus cliSelectedContract = do
       forM_ [uiEventsForwarderStopVar, corpusSaverStopVar] takeMVar
 
       liftIO $ killThread ticker
+
+      -- Stop the periodic saver if it was running
+      case periodicSaverThreadId of
+        Just tid -> liftIO $ killThread tid
+        Nothing -> pure ()
 
       -- print final status regardless of the last scheduled update
       liftIO printStatus

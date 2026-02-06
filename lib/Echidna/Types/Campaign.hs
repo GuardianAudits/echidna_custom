@@ -72,6 +72,9 @@ data CampaignConf = CampaignConf
   , symExecMaxExplore :: Integer
     -- ^ Maximum number of states to explore before we stop exploring it.
     -- Only relevant if symExec is True
+  , saveEvery          :: Maybe Int
+    -- ^ Save coverage data every N minutes during campaign execution.
+    -- If Nothing, coverage is only saved at the end of the campaign.
   , logicalCoverage :: Bool
     -- ^ Whether to collect logical coverage statistics
   , logicalCoverageTopN :: Int

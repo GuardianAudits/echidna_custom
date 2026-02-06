@@ -113,6 +113,7 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "symExecMaxIters"    ..!= defaultSymExecMaxIters
         <*> v ..:? "symExecAskSMTIters" ..!= defaultSymExecAskSMTIters
         <*> v ..:? "symExecMaxExplore"  ..!= defaultSymExecMaxExplore
+        <*> v ..:? "saveEvery"          ..!= Nothing
         <*> v ..:? "logicalCoverage" ..!= True
         <*> v ..:? "logicalCoverageTopN" ..!= defaultLogicalCoverageTopN
         <*> v ..:? "logicalCoverageMaxReasons" ..!= defaultLogicalCoverageMaxReasons
