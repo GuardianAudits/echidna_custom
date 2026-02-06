@@ -127,3 +127,5 @@ symExecMaxExplore: 10
 # Select the SMT solver when using symbolic execution. Valid values are: "cvc5", "z3" and "bitwuzla"
 # only relevant if symExec is true
 symExecSMTSolver: bitwuzla
+# show intermediate shrinking progress every N iterations (text mode only); by default is disabled
+showShrinkingEvery: null

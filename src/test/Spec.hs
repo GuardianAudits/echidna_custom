@@ -14,6 +14,7 @@ import Tests.Optimization (optimizationTests)
 import Tests.Overflow (overflowTests)
 import Tests.Research (researchTests)
 import Tests.Seed (seedTests)
+import Tests.Shrinking (shrinkingTests)
 import Tests.Symbolic (symbolicTests)
 import Tests.Values (valuesTests)
 
@@ -36,4 +37,5 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , foundryTestGenTests
            , cheatTests
            , symbolicTests
+           , shrinkingTests
            ]

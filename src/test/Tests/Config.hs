@@ -39,6 +39,11 @@ configTests = testGroup "Configuration tests" $
       assertBool "" $ isNothing (defaultConfig.campaignConf.corpusDir)
   , testCase "coverageDir defaults to Nothing" $
       assertBool "" $ isNothing (defaultConfig.campaignConf.coverageDir)
+  , testCase "parse showShrinkingEvery" $ do
+      config <- (.econfig) <$> parseConfig "basic/show-shrinking-test.yaml"
+      assertBool "showShrinkingEvery should be 10" $ config.campaignConf.showShrinkingEvery == Just 10
+  , testCase "showShrinkingEvery defaults to Nothing" $
+      assertBool "" $ isNothing (defaultConfig.campaignConf.showShrinkingEvery)
   , testCase "default.yaml" $ do
       EConfigWithUsage _ bad unset <- parseConfig "basic/default.yaml"
       assertBool ("unused options: " ++ show bad) $ null bad
@@ -63,4 +68,4 @@ configTests = testGroup "Configuration tests" $
         Right (_ :: EConfigWithUsage) -> assertFailure "should not decode"
         Left _ -> pure ()
   ]
-  where files = ["basic/config.yaml", "basic/default.yaml", "basic/coverage-test.yaml", "basic/corpus-fallback-test.yaml"]
+  where files = ["basic/config.yaml", "basic/default.yaml", "basic/coverage-test.yaml", "basic/corpus-fallback-test.yaml", "basic/show-shrinking-test.yaml"]

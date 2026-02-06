@@ -1,0 +1,6 @@
+# Test configuration for realtime shrinking display
+testMode: "property"
+testLimit: 10000
+shrinkLimit: 100
+showShrinkingEvery: 10
+quiet: true
