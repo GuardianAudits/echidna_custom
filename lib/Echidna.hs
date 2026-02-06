@@ -108,9 +108,10 @@ loadInitialCorpus env = do
   case env.cfg.campaignConf.corpusDir of
     Nothing -> pure []
     Just dir -> do
+      ctxsUnshrunk <- loadTxs (dir </> "reproducers-unshrunk")
       ctxs1 <- loadTxs (dir </> "reproducers")
       ctxs2 <- loadTxs (dir </> "coverage")
-      pure (ctxs1 ++ ctxs2)
+      pure (ctxsUnshrunk ++ ctxs1 ++ ctxs2)
 
 instance TTY IO where
   writeOutput = liftIO . putStrLn . T.unpack
