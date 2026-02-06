@@ -1,0 +1,6 @@
+# Test configuration for periodic coverage saving
+testMode: "property"
+testLimit: 100
+corpusDir: "test-corpus"
+saveEvery: 5
+quiet: true

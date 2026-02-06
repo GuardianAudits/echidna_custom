@@ -20,6 +20,7 @@ module Common
   , loadSolTests
   , checkCoverageUsesCorpusDir
   , gasConsumedGt
+  , checkSaveEveryConfig
   ) where
 
 import Control.Monad (forM_)
@@ -262,3 +263,8 @@ checkCoverageUsesCorpusDir expectedCorpusDir (env, _) = do
   case (env.cfg.campaignConf.corpusDir, env.cfg.campaignConf.coverageDir) of
     (Just corpusDir, Nothing) -> pure $ corpusDir == expectedCorpusDir
     _ -> pure False
+
+-- | Check that saveEvery config is properly set to the expected value.
+checkSaveEveryConfig :: Maybe Int -> (Env, WorkerState) -> IO Bool
+checkSaveEveryConfig expected (env, _) =
+  pure $ env.cfg.campaignConf.saveEvery == expected

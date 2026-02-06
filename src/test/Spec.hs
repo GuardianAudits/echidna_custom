@@ -12,6 +12,7 @@ import Tests.FoundryTestGen (foundryTestGenTests)
 import Tests.Integration (integrationTests)
 import Tests.Optimization (optimizationTests)
 import Tests.Overflow (overflowTests)
+import Tests.PeriodicSave (periodicSaveTests)
 import Tests.Research (researchTests)
 import Tests.Seed (seedTests)
 import Tests.Symbolic (symbolicTests)
@@ -36,4 +37,5 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , foundryTestGenTests
            , cheatTests
            , symbolicTests
+           , periodicSaveTests
            ]
