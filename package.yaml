@@ -60,6 +60,7 @@ library:
     - http-conduit
     - ListLike
     - mustache
+    - network
     - optics
     - optics-core
     - process
@@ -70,6 +71,10 @@ library:
     - split
     - strip-ansi-escape
     - time
+    - cryptonite
+    - websockets
+    - wuss
+    - stm
     - unliftio
     - unliftio-core
     - utf8-string
@@ -113,6 +118,26 @@ executables:
       - condition: os(darwin)
         ld-options: -Wl,-keep_dwarf_unwind
         ghc-options: -fcompact-unwind
+
+  echidna-corpus-hub:
+    main: Main.hs
+    source-dirs: src/hub
+    dependencies:
+      - echidna
+      - aeson
+      - bytestring
+      - containers
+      - directory
+      - filepath
+      - optparse-applicative
+      - stm
+      - text
+      - time
+      - websockets
+    ghc-options:
+      - -threaded
+      - -rtsopts
+      - '"-with-rtsopts=-N"'
 
 tests:
   echidna-testsuite:

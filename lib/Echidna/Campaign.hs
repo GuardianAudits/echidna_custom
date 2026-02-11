@@ -38,7 +38,7 @@ import Echidna.ABI
 import Echidna.Events (extractEventValues)
 import Echidna.Exec
 import Echidna.LogicalCoverage (emptyLogicalCoverage, updateLogicalCoverage)
-import Echidna.MCP (recordTx, recordLogicalCoverage, recordCheatStats, mcpCheckpoint)
+import Echidna.MCP (recordTx, recordLogicalCoverage, mcpCheckpoint)
 import Echidna.Mutator.Corpus
 import Echidna.Shrink (shrinkTest)
 import Echidna.Solidity (chooseContract)
@@ -145,7 +145,6 @@ runSymWorker callback vm dict workerId _ name = do
                 , ncallseqs = 0
                 , ncalls = 0
                 , totalGas = 0
-                , cheatCallStats = mempty
                 , logicalCoverage = emptyLogicalCoverage
                 , runningThreads = []
                 }
@@ -345,7 +344,6 @@ runFuzzWorker callback vm dict workerId initialCorpus testLimit = do
                   , ncallseqs = 0
                   , ncalls = 0
                   , totalGas = 0
-                  , cheatCallStats = mempty
                   , logicalCoverage = emptyLogicalCoverage
                   , runningThreads = []
                   }
@@ -615,35 +613,16 @@ evalSeq vm0 execFunc = go vm0 [] where
           when enabled $ do
             maxReasons <- asks (.cfg.campaignConf.logicalCoverageMaxReasons)
             updated <- updateLogicalCoverage maxReasons vm' tx result =<< gets (.logicalCoverage)
-            modify' $ \WorkerState
-              { workerId
-              , genDict
-              , newCoverage
-              , ncallseqs
-              , ncalls
-              , totalGas
-              , cheatCallStats
-              , runningThreads
-              } ->
-                WorkerState
-                  { workerId = workerId
-                  , genDict = genDict
-                  , newCoverage = newCoverage
-                  , ncallseqs = ncallseqs
-                  , ncalls = ncalls
-                  , totalGas = totalGas
-                  , cheatCallStats = cheatCallStats
-                  , logicalCoverage = updated
-                  , runningThreads = runningThreads
-                  }
+            -- Disambiguate record update: both CampaignConf and WorkerState have a
+            -- `logicalCoverage` field.
+            let setWorkerLogicalCoverage :: WorkerState -> WorkerState
+                setWorkerLogicalCoverage workerState =
+                  workerState { logicalCoverage = updated }
+            modify' setWorkerLogicalCoverage
             wid <- gets (.workerId)
             forM_ env.mcpState $ \st -> recordLogicalCoverage st wid updated
           modify' $ \workerState -> workerState
-            { totalGas = workerState.totalGas + fromIntegral (vm'.burned - vm.burned)
-            , cheatCallStats = vm'.cheatCallStats
-            }
-          wid <- gets (.workerId)
-          forM_ env.mcpState $ \st -> recordCheatStats st wid vm'.cheatCallStats
+            { totalGas = workerState.totalGas + fromIntegral (vm'.burned - vm.burned) }
           -- NOTE: we don't use the intermediate VMs, just the last one. If any of
           -- the intermediate VMs are needed, they can be put next to the result
           -- of each transaction - `m ([(Tx, result, VM)])`

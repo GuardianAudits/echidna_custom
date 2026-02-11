@@ -52,6 +52,121 @@ defaultMCPConf = MCPConf
   , maxTxs = 1000
   }
 
+data CorpusSyncValidate
+  = CorpusSyncValidateNone
+  | CorpusSyncValidateReplay
+  | CorpusSyncValidateExecute
+  deriving (Show, Eq)
+
+instance FromJSON CorpusSyncValidate where
+  parseJSON = withText "CorpusSyncValidate" $ \t ->
+    case T.toLower t of
+      "none" -> pure CorpusSyncValidateNone
+      "replay" -> pure CorpusSyncValidateReplay
+      "execute" -> pure CorpusSyncValidateExecute
+      _ -> fail "invalid corpusSync.ingest.validate (expected none|replay|execute)"
+
+data CorpusSyncWeightPolicy
+  = CorpusSyncWeightConstant
+  | CorpusSyncWeightLocalNCallseqs
+  | CorpusSyncWeightHubScore
+  deriving (Show, Eq)
+
+instance FromJSON CorpusSyncWeightPolicy where
+  parseJSON = withText "CorpusSyncWeightPolicy" $ \t ->
+    case T.toLower t of
+      "constant" -> pure CorpusSyncWeightConstant
+      "local_ncallseqs" -> pure CorpusSyncWeightLocalNCallseqs
+      "hub_score" -> pure CorpusSyncWeightHubScore
+      _ -> fail "invalid corpusSync.ingest.weightPolicy (expected constant|local_ncallseqs|hub_score)"
+
+data CorpusSyncPublishConf = CorpusSyncPublishConf
+  { coverage :: Bool
+  , failures :: Bool
+  , maxPerSecond :: Int
+  , burst :: Int
+  , maxEntryBytes :: Int
+  , batchSize :: Int
+  } deriving (Show, Eq)
+
+defaultCorpusSyncPublishConf :: CorpusSyncPublishConf
+defaultCorpusSyncPublishConf = CorpusSyncPublishConf
+  { coverage = True
+  , failures = True
+  , maxPerSecond = 2
+  , burst = 20
+  , maxEntryBytes = 262144
+  , batchSize = 20
+  }
+
+data CorpusSyncIngestConf = CorpusSyncIngestConf
+  { enabled :: Bool
+  , validate :: CorpusSyncValidate
+  , maxPending :: Int
+  , maxPerMinute :: Int
+  , sampleRate :: Double
+  , weightPolicy :: CorpusSyncWeightPolicy
+  , constantWeight :: Int
+  } deriving (Show, Eq)
+
+defaultCorpusSyncIngestConf :: CorpusSyncIngestConf
+defaultCorpusSyncIngestConf = CorpusSyncIngestConf
+  { enabled = True
+  , validate = CorpusSyncValidateReplay
+  , maxPending = 2000
+  , maxPerMinute = 600
+  , sampleRate = 1.0
+  , weightPolicy = CorpusSyncWeightConstant
+  , constantWeight = 1
+  }
+
+data CorpusSyncBehaviorConf = CorpusSyncBehaviorConf
+  { stopOnFleetStop :: Bool
+  , resume :: Bool
+  , reconnectBackoffMs :: [Int]
+  } deriving (Show, Eq)
+
+defaultCorpusSyncBehaviorConf :: CorpusSyncBehaviorConf
+defaultCorpusSyncBehaviorConf = CorpusSyncBehaviorConf
+  { stopOnFleetStop = True
+  , resume = True
+  , reconnectBackoffMs = [250, 500, 1000, 2000, 5000, 10000]
+  }
+
+data CorpusSyncTLSConf = CorpusSyncTLSConf
+  { insecureSkipVerify :: Bool
+  , caFile :: Maybe FilePath
+  } deriving (Show, Eq)
+
+defaultCorpusSyncTLSConf :: CorpusSyncTLSConf
+defaultCorpusSyncTLSConf = CorpusSyncTLSConf
+  { insecureSkipVerify = False
+  , caFile = Nothing
+  }
+
+data CorpusSyncConf = CorpusSyncConf
+  { enabled :: Bool
+  , url :: Text
+  , token :: Maybe Text
+  , campaignOverride :: Maybe Text
+  , publish :: CorpusSyncPublishConf
+  , ingest :: CorpusSyncIngestConf
+  , behavior :: CorpusSyncBehaviorConf
+  , tls :: CorpusSyncTLSConf
+  } deriving (Show, Eq)
+
+defaultCorpusSyncConf :: CorpusSyncConf
+defaultCorpusSyncConf = CorpusSyncConf
+  { enabled = False
+  , url = "ws://127.0.0.1:9010/ws"
+  , token = Nothing
+  , campaignOverride = Nothing
+  , publish = defaultCorpusSyncPublishConf
+  , ingest = defaultCorpusSyncIngestConf
+  , behavior = defaultCorpusSyncBehaviorConf
+  , tls = defaultCorpusSyncTLSConf
+  }
+
 data OperationMode = Interactive | NonInteractive OutputFormat deriving (Show, Eq)
 data OutputFormat = Text | JSON | None deriving (Show, Eq)
 data UIConf = UIConf { maxTime       :: Maybe Int
@@ -73,6 +188,7 @@ data EConfig = EConfig
   , txConf :: TxConf
   , uiConf :: UIConf
   , mcpConf :: MCPConf
+  , corpusSyncConf :: CorpusSyncConf
 
   , allEvents :: Bool
   , rpcUrl :: Maybe Text

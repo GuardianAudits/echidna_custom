@@ -1,35 +1,18 @@
 # Custom Echidna + HEVM — Change Log
 
-This document summarizes **all custom changes** applied so far in this repo + its paired `hevm` repo, with a focus on the three new cheatcodes:
+This document summarizes **all custom changes** applied so far in this repo + its paired `hevm` repo, with a focus on the custom HEVM cheatcodes:
 
-- `doFunctionCall(address,bytes,address)`
 - `snapshot()`
 - `revertTo(uint256)`
-
-It also documents Echidna’s integration so you can see the stats in output.
-
----
-
-## 1) Overview of the 3 new cheatcodes
-
-### A) `doFunctionCall(address target, bytes data, address actor)`
-**Purpose:** Perform a **low‑level CALL** to `target` using `actor` as `msg.sender`, returning `(success, returndata)`.
-
-**Behavior:**
-- Executes an actual CALL in the EVM (not a precompile or a Solidity interface call).
-- Uses the current call value from the VM.
-- Returns the success flag + raw returndata (just like a low‑level `call`).
-- Tracks per‑selector stats (success/fail counts) across the fuzz run.
-
-**Selector stats recorded:**
-- Total calls for that selector
-- Successful calls
-- Failed calls
-- Success % (computed in Echidna UI/report)
+- `readFile(string)`
+- `getCode(string)`
+- `parseJsonBytes(string,string)`
 
 ---
 
-### B) `snapshot()`
+## 1) Overview of the cheatcodes
+
+### A) `snapshot()`
 **Purpose:** Capture a **world‑state snapshot** (Foundry‑style). Returns `uint256 id`.
 
 **Semantics (confirmed):**
@@ -40,7 +23,7 @@ It also documents Echidna’s integration so you can see the stats in output.
 
 ---
 
-### C) `revertTo(uint256 id)`
+### B) `revertTo(uint256 id)`
 **Purpose:** Restore a snapshot by id. Returns `bool`.
 
 **Semantics (confirmed):**
@@ -50,13 +33,73 @@ It also documents Echidna’s integration so you can see the stats in output.
 
 ---
 
+### C) `readFile(string path)`
+**Purpose:** Read a file from the local filesystem (sandboxed) and return its contents as `string`.
+
+**Semantics (confirmed):**
+- Requires `allowFFI=true` (same gate as `ffi(string[])`)
+- Path is resolved under a filesystem root; attempts to escape the root are rejected
+- Enforces a max file size (default: 5 MiB)
+- On failure, reverts with `Error(string)` describing the error
+
+---
+
+### D) `parseJsonBytes(string json, string keyPath)`
+**Purpose:** Parse JSON and extract a value as `bytes`.
+
+**Semantics (confirmed):**
+- `json` must be valid JSON text
+- `keyPath` supports dot-separated keys and `[index]` array indexing; bracket-quoted keys like `['a.b']` are supported
+- Selected value must be:
+  - a hex string with `0x` prefix (odd-length allowed; left-padded)
+  - OR an array of byte values (numbers `0..255`)
+- On failure, reverts with `Error(string)` describing the parse/path/type error
+- Not gated behind `allowFFI`
+
+---
+
+### E) `getCode(string artifactPath)`
+**Purpose:** Read contract creation bytecode from local artifact JSON files (Foundry-style selectors).
+
+**Semantics (confirmed):**
+- Requires `allowFFI=true` (same gate as `ffi(string[])` and `readFile(string)`)
+- Returns creation bytecode as `bytes`
+- Supports selectors:
+  - direct artifact path (`*.json`)
+  - `<File.sol>:<Contract>`
+  - `<Contract>`
+  - `<File.sol>`
+  - `<File.sol>:<Version>`
+  - `<Contract>:<Version>`
+- Rejects malformed refs, unresolved refs, invalid JSON, missing bytecode fields, invalid hex, and unlinked library placeholders
+- Uses sandboxed filesystem resolution under artifacts root with max-bytes limit
+
+---
+
 ## 2) Where changes live (hevm repo)
 
 ### Cheatcode implementation
 - **`hevm/src/EVM.hs`**
-  - `cheatActions` contains the new cheatcodes
-  - `doFunctionCall` implementation lives here
-  - `snapshot`/`revertTo` logic + helpers live here
+  - `cheatActions` contains the custom cheatcodes (`snapshot`, `revertTo`, `readFile`, `getCode`, `parseJsonBytes`)
+  - `snapshot`/`revertTo` capture/restore helpers live here
+  - `parseJsonBytes` JSON path + decoding helpers live here
+  - `getCode` dispatch + ABI return/revert handling live here
+
+### `readFile` query plumbing
+- **`hevm/src/EVM/Types.hs`**
+  - Added `PleaseReadFile :: FilePath -> (Either String ByteString -> EVM t ()) -> Query t`
+- **`hevm/src/EVM/Fetch.hs`**
+  - Answers `PleaseReadFile` using a sandboxed filesystem root + max size
+
+### `getCode` query plumbing
+- **`hevm/src/EVM/Types.hs`**
+  - Added `PleaseGetCode :: FilePath -> (Either String ByteString -> EVM t ()) -> Query t`
+- **`hevm/src/EVM/GetCode.hs`**
+  - Shared resolver + artifact selector parser + bytecode extraction + sandbox checks
+- **`hevm/src/EVM/Fetch.hs`**
+  - Answers `PleaseGetCode` with HEVM-preferring env precedence
+- **`hevm/hevm.cabal`**
+  - Exposes `EVM.GetCode` from the `hevm` library so Echidna can reuse the same resolver
 
 ### New VM snapshot state
 - **`hevm/src/EVM/Types.hs`**
@@ -79,24 +122,7 @@ Not captured:
 
 ---
 
-## 3) Echidna integration (this repo)
-
-Echidna was modified to **collect and display selector stats** for `doFunctionCall`.
-
-### State handling
-- **`lib/Echidna/Types/Campaign.hs`**
-  - Added `cheatCallStats` to `WorkerState`
-- **`lib/Echidna/Exec.hs`**
-  - Preserve `cheatCallStats` across revert resets
-- **`lib/Echidna/Campaign.hs`**
-  - Pull stats from VM back into `WorkerState`
-
-### UI / reporting
-- **`lib/Echidna/UI/Report.hs`**
-  - Merge + format stats
-  - Prints “Tracked calls” in end‑of‑run summary
-- **`lib/Echidna/UI.hs`**
-  - Shows compact “tracked: …” in live status line
+## 3) Echidna notes
 
 ### Logical coverage summary behavior (important)
 The **Logical coverage** section is **Top‑N only** and **sorted by total call count**, not by success rate.
@@ -116,16 +142,48 @@ To show all called methods, set `logicalCoverageTopN` higher via CLI or config:
 logicalCoverageTopN: 200
 ```
 
-**Example end‑of‑run output:**
-```
-Tracked calls:
-  0x12345678: 8/10 ok (80.0%), 2 failed
-```
+---
 
-**Example live line (interactive mode):**
-```
-..., tracked: 0x12345678 8/10 (80.0%) +2
-```
+### `readFile` support (filesystem sandbox)
+Echidna answers HEVM `PleaseReadFile` queries in **`lib/Echidna/Exec.hs`**.
+
+Environment variables:
+- `ECHIDNA_FS_ROOT` / `HEVM_FS_ROOT`: filesystem root (default: current working directory)
+- `ECHIDNA_FS_MAX_BYTES` / `HEVM_FS_MAX_BYTES`: max file size in bytes (default: `5 * 1024 * 1024`)
+
+Notes:
+- `readFile(string)` is still gated by `allowFFI=true` (same as `ffi(string[])`). In Echidna, set `allowFFI: true` in the YAML config.
+- Precedence: Echidna prefers `ECHIDNA_*` first; HEVM prefers `HEVM_*` first.
+- Both Echidna and HEVM prevent paths from escaping the configured root (after canonicalization).
+
+### `getCode` support (artifact resolver)
+Echidna answers HEVM `PleaseGetCode` queries in **`lib/Echidna/Exec.hs`** via shared resolver logic in `hevm/src/EVM/GetCode.hs`.
+
+Environment variables:
+- `ECHIDNA_ARTIFACTS_ROOT` / `HEVM_ARTIFACTS_ROOT`: artifact search root (fallback: `*_FS_ROOT`, then current directory)
+- `ECHIDNA_ARTIFACTS_MAX_BYTES` / `HEVM_ARTIFACTS_MAX_BYTES`: max artifact size in bytes (fallback: `*_FS_MAX_BYTES`, then `5 * 1024 * 1024`)
+- `ECHIDNA_SOLC_VERSION` / `HEVM_SOLC_VERSION` / `FOUNDRY_SOLC_VERSION` / `SOLC_VERSION`: preferred compiler version for ambiguous selectors
+
+Notes:
+- If `ECHIDNA_ARTIFACTS_ROOT` points directly to your artifact directory, selector paths should usually be root-relative (e.g., `MyContract.json`, not `artifacts/MyContract.json`).
+- Echidna-side env precedence for getCode is Echidna-first (`ECHIDNA_*` before `HEVM_*`), matching `readFile` behavior.
+
+### Cheatcode test coverage (current)
+
+Echidna tests:
+- `src/test/Tests/Cheat.hs` registers `getCode` coverage in both modes:
+  - `tests/solidity/cheat/getCode.sol` (`TestGetCode`) with `allowFFI: true`
+  - `tests/solidity/cheat/getCode.sol` (`TestGetCodeNoFFI`) with `allowFFI: false`
+- Config files:
+  - `tests/solidity/cheat/getCode.yaml`
+  - `tests/solidity/cheat/getCode_noffi.yaml`
+- Artifact fixtures:
+  - `tests/solidity/cheat/getcode_artifacts/*.json`
+
+Local smoke project tests:
+- `solidity_project/contracts/smoke/CheatcodesSmoke.sol` covers selector matrix + bad-input reverts for `getCode`.
+- `solidity_project/contracts/smoke/CheatcodesSmoke_NoFFI.sol` verifies `getCode` gate behavior when `allowFFI=false`.
+- `solidity_project/scripts/run_smoke.sh` exports `ECHIDNA_ARTIFACTS_ROOT`/`ECHIDNA_ARTIFACTS_MAX_BYTES` and runs full smoke sequence.
 
 ---
 
@@ -134,12 +192,12 @@ Tracked calls:
 ### Cheatcode interface
 ```solidity
 interface IHevmCheatcodes {
-    function doFunctionCall(address target, bytes calldata data, address actor)
-        external
-        returns (bool success, bytes memory returndata);
-
     function snapshot() external returns (uint256 id);
     function revertTo(uint256 id) external returns (bool success);
+
+    function readFile(string calldata path) external returns (string memory contents);
+    function getCode(string calldata artifactPath) external returns (bytes memory creationBytecode);
+    function parseJsonBytes(string calldata json, string calldata keyPath) external returns (bytes memory out);
 }
 ```
 
@@ -152,18 +210,17 @@ IHevmCheatcodes hevm = IHevmCheatcodes(
 
 ### Example usage
 ```solidity
-(uint256 id) = hevm.snapshot();
+uint256 id = hevm.snapshot();
 // mutate state
-(bool ok, ) = hevm.revertTo(id);
+bool ok = hevm.revertTo(id);
 require(ok, "revertTo failed");
-```
 
-```solidity
-(bool ok, bytes memory ret) = hevm.doFunctionCall(
-    target,
-    abi.encodeWithSelector(IMoneyMarketMain.operate.selector, nftId, 0, actionData),
-    actor
-);
+// Read a JSON fixture and extract bytes from it.
+string memory json = hevm.readFile("fixtures/input.json");
+bytes memory blob = hevm.parseJsonBytes(json, ".foo.bar[0]");
+
+// Load creation bytecode from an artifact selector.
+bytes memory initCode = hevm.getCode("MyContract.sol:MyContract");
 ```
 
 ---
@@ -180,17 +237,28 @@ HEVM_SRC=/Users/robert/Documents/audits/others/echidna_hevm_custom/hevm \
 Binary:
 ```
 /Users/robert/Documents/audits/others/echidna_hevm_custom/echidna/result/bin/echidna
+/Users/robert/Documents/audits/others/echidna_hevm_custom/echidna/result/bin/echidna-corpus-hub
 ```
 
 ### Build HEVM directly
 ```bash
 cd /Users/robert/Documents/audits/others/echidna_hevm_custom/hevm
-nix build .#ci -L --max-jobs auto --cores 0
+nix build .#hevm -L --max-jobs auto --cores 0
 ```
 
 Binary:
 ```
 /Users/robert/Documents/audits/others/echidna_hevm_custom/hevm/result/bin/hevm
+```
+
+HEVM CLI version check:
+```bash
+./result/bin/hevm version
+```
+
+If your Nix setup disables import-from-derivation during evaluation, add:
+```bash
+--option allow-import-from-derivation true
 ```
 
 ---
@@ -199,7 +267,10 @@ Binary:
 
 - `snapshot()` and `revertTo()` are **concrete‑only**. Symbolic execution will throw `BadCheatCode`.
 - Snapshots are **persistent**; there is no max count enforcement in v1.
-- Cheat‑environment state (`labels`, `osEnv`, `cheatCallStats`) is **not reverted** on `revertTo`, per current decision.
+- Cheat‑environment state (`labels`, `osEnv`) is **not reverted** on `revertTo`, per current decision.
+- `readFile(string)` is gated by `allowFFI=true` and is sandboxed under `*_FS_ROOT` with a `*_FS_MAX_BYTES` cap.
+- `getCode(string)` is gated by `allowFFI=true`, uses sandboxed artifact resolution, and defaults to deterministic ambiguity errors when selector/version is not unique.
+- `parseJsonBytes(string,string)` only decodes a selected value as either a `0x`-prefixed hex string or an array of byte values.
 
 ---
 
@@ -230,7 +301,33 @@ coverageLineHits: true
 
 ## 8) MCP Server + Live Dashboard (HTTP)
 
-**Purpose:** Provide a live, queryable view of Echidna runs, reverts, traces, handlers, logical coverage, cheatcode stats, and coverage hits via a local MCP‑style JSON‑RPC server plus a built‑in dashboard.
+**Purpose:** Provide a live, queryable view of Echidna runs, reverts, traces, handlers, logical coverage, and coverage hits via a local MCP‑style JSON‑RPC server plus a built‑in dashboard.
+
+### How it works
+
+When MCP is enabled, Echidna starts an embedded HTTP server and keeps bounded in-memory run state that is updated as fuzzing progresses.
+
+- Producer side (inside Echidna):
+  - workers/tests emit events, reverts, tx summaries, handlers, traces, and coverage stats.
+  - MCP store keeps the latest data with configurable caps (`maxEvents`, `maxReverts`, `maxTxs`).
+- Consumer side:
+  - Dashboard (`/` and `/ui`) reads from the same MCP store.
+  - JSON-RPC clients call `POST /mcp` to query resources/tools.
+
+This is live runtime state, not a historical database. Restarting Echidna resets MCP in-memory state.
+
+### How to reach it
+
+MCP address is built from `mcp.host` + `mcp.port`:
+
+- Base URL: `http://<host>:<port>`
+- Dashboard: `GET /` (or `GET /ui`)
+- Health: `GET /health`
+- JSON-RPC: `POST /mcp`
+
+Reachability rules:
+- `host: 127.0.0.1` => local machine only (recommended default).
+- `host: 0.0.0.0` => reachable from other machines on the network (add network/firewall controls yourself).
 
 ### What you get
 
@@ -254,6 +351,22 @@ mcp:
   maxTxs: 1000
 ```
 
+Minimal quick-start `echidna.yaml`:
+```yaml
+testMode: property
+format: text
+quiet: true
+
+mcp:
+  enabled: true
+  transport: http
+  host: "127.0.0.1"
+  port: 9001
+  maxEvents: 5000
+  maxReverts: 1000
+  maxTxs: 1000
+```
+
 **CLI flags**
 ```bash
 --mcp true \
@@ -263,6 +376,19 @@ mcp:
 --mcp-max-events 5000 \
 --mcp-max-reverts 1000 \
 --mcp-max-txs 1000
+```
+
+Example run using config file:
+```bash
+./result/bin/echidna contracts/MyTest.sol --contract MyTest --config echidna.yaml
+```
+
+Quick connectivity checks:
+```bash
+curl -s http://127.0.0.1:9001/health
+curl -s -X POST http://127.0.0.1:9001/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"resources/list"}'
 ```
 
 **Defaults**
@@ -281,7 +407,6 @@ mcp:
 
 - Run status (phase, worker counts, time, seeds)
 - Handlers (calls + success/failure)
-- Cheatcode stats (per selector)
 - Logical coverage (success rate, arg ranges, revert reasons)
 - Coverage summary + per‑line hit counts
 - Reverts (reason + trace)
@@ -298,16 +423,16 @@ From `resources/list`:
 - `echidna://run/txs`
 - `echidna://run/handlers`
 - `echidna://run/traces`
+- `echidna://run/trace` (by id)
 - `echidna://coverage/summary`
 - `echidna://coverage/lines`
-- `echidna://stats/cheatcodes`
 - `echidna://stats/logical-coverage`
 
 ### JSON‑RPC tools available
 
 - `pause` / `resume` / `stop`
 - `get_status`, `get_events`, `get_reverts`, `get_handlers`, `get_traces`
-- `get_logical_coverage`, `get_coverage_hits`, `get_cheat_stats`
+- `get_logical_coverage`, `get_coverage_hits`
 
 ### Example `curl` usage
 ```bash
@@ -326,3 +451,137 @@ Typical MCP phases during a run:
 - `disabled` (when MCP is off or transport unsupported)
 
 ---
+
+## 9) Distributed Corpus Sync (WebSockets / WSS)
+
+**Purpose:** Run Echidna in a fleet (100+ cores/nodes) where instances share high-signal inputs (coverage-increasing call sequences and failing reproducers) via a hub-and-spoke WebSocket protocol, converging toward one consolidated corpus.
+
+Protocol/design notes are now consolidated in this changelog section (the old standalone spec file was removed).
+
+### What was added
+
+Client-side (in `echidna`):
+- `lib/Echidna/CorpusSync.hs`: in-process corpus sync client (publish + subscribe + ingest).
+- `lib/Echidna/CorpusSync/Protocol.hs`: JSON message envelope + message payload types/builders.
+- `lib/Echidna/CorpusSync/Hash.hs`: `entry_id` + campaign fingerprint hashing (SHA256 via `cryptonite`).
+- `lib/Echidna/UI.hs`: starts corpus sync alongside workers; waits for it to finish on shutdown.
+
+Configuration + CLI wiring:
+- `lib/Echidna/Types/Config.hs`: new `corpusSyncConf :: CorpusSyncConf` and nested config types/defaults.
+- `lib/Echidna/Config.hs`: YAML parsing for the new `corpusSync:` key.
+- `src/Main.hs`: new CLI flags (see below).
+
+Hub-side (new executable):
+- `src/hub/Main.hs`: `echidna-corpus-hub` WebSocket hub server.
+- `package.yaml`: new executable stanza + deps (`websockets`, `wuss`, `cryptonite`, `stm`).
+
+### High-level behavior (v1)
+
+- Each Echidna instance opens **one** `ws://` or `wss://` connection to a hub.
+- On `WorkerEvent.NewCoverage`, the instance publishes a `corpus_publish` message containing:
+  - metadata (entry type, tx count, bytes, origin info, hints)
+  - the `[Tx]` payload
+- The hub persists/deduplicates entries and broadcasts `corpus_announce` (metadata only).
+- Other instances receive `corpus_announce`, then request the payload via `corpus_get` and ingest it on `corpus_entry`.
+- On `WorkerEvent.TestFalsified`, the instance publishes `failure_publish` with a reproducer; the hub can optionally broadcast `fleet_stop` to stop the fleet early.
+
+### Entry IDs and deduplication
+
+- `entry_id = sha256Hex(encode([Tx]))` (Aeson JSON encoding, then SHA256).
+- Hub recomputes `entry_id` from the received tx list and rejects mismatches.
+- Client recomputes `entry_id` on ingest and rejects mismatches.
+
+Note: this is stable within the same Echidna build; it is not a cross-language canonicalization scheme.
+
+### Campaign fingerprint
+
+To avoid mixing incompatible runs, the client computes a `campaign_fingerprint` (SHA256 over a JSON descriptor including Echidna version, deployed codehashes list, deployment config, and fork config). This fingerprint is used as the hub “campaign group” key.
+
+### Fleet stop behavior
+
+- When the hub broadcasts `fleet_stop` and `corpusSync.behavior.stopOnFleetStop=true` (default), instances stop their workers gracefully.
+- The “origin” instance (the one that already published a failure) delays stop until its shrink phase is done (heuristic: it waits until no tests are in `Large _` state).
+
+### How to enable (YAML)
+
+```yaml
+corpusSync:
+  enabled: true
+  url: "ws://127.0.0.1:9010/ws"
+  token: null
+  publish:
+    coverage: true
+    failures: true
+    maxPerSecond: 2
+    burst: 20
+    maxEntryBytes: 262144
+    batchSize: 20
+  ingest:
+    enabled: true
+    validate: replay   # none|replay|execute
+    maxPending: 2000   # coverage-only backpressure; reproducers bypass
+    maxPerMinute: 600  # coverage-only rate limit; reproducers bypass
+    sampleRate: 1.0    # coverage entries only; reproducers always ingested
+  behavior:
+    stopOnFleetStop: true
+    resume: true
+```
+
+### CLI flags
+
+```bash
+--corpus-sync true|false
+--corpus-sync-url ws://... or wss://...
+--corpus-sync-token TOKEN
+--corpus-sync-validate none|replay|execute
+--corpus-sync-sample-rate 0.0-1.0
+--corpus-sync-max-entry-bytes N
+--corpus-sync-stop-on-fleet-stop true|false
+```
+
+### Hub usage
+
+After building, the hub binary is:
+- `./result/bin/echidna-corpus-hub`
+
+Example (no auth):
+```bash
+./result/bin/echidna-corpus-hub --host 0.0.0.0 --port 9010 --no-auth --data-dir ./hub_data
+```
+
+Example (token auth, and broadcast fleet_stop on first failure):
+```bash
+./result/bin/echidna-corpus-hub --host 0.0.0.0 --port 9010 --data-dir ./hub_data --token mytoken --broadcast-fleet-stop
+```
+
+Hub persistence layout (per campaign fingerprint):
+- `hub_data/<campaign>/corpus/<entry_id>.txt` (JSON `[Tx]`)
+- `hub_data/<campaign>/index.jsonl` (append-only index with seq + meta)
+
+### v2 Improvements (Implemented)
+
+Hub:
+- **Default-on visibility:** logs connect/disconnect, failures, fleet_stop broadcasts, payload corruption/missing payloads, persistence write errors, and periodic stats (`--stats-interval-ms`).
+- **Better operator UX:** hub stdout is line-buffered (so redirected `hub.log` updates immediately) and stats are emitted as one-line `stats_global` + `stats_campaign` events (or JSON with `--log-format json`).
+- **Structured logs:** `--log-format text|json`.
+- **Optional stats file:** `--stats-file PATH` writes a JSON snapshot each interval.
+- **Reload on restart:** scans `hub_data/*/index.jsonl` on startup and rebuilds in-memory state so restarts don’t “forget” accepted entries.
+- **Resume pagination:** adds `corpus_since_request` paging so clients can catch up beyond the previous 1000-entry truncation.
+- **Backpressure + fanout control:** per-connection bounded queues for announcements and GET servicing (`--max-inflight-gets`), avoiding unbounded memory growth from slow clients.
+- **Payload cache:** LRU-ish in-memory cache to reduce disk reads during GET storms (`--payload-cache-mb`).
+- **Rate limiting + caps:** optional per-connection publish limit (`--max-publishes-per-minute`) and optional cap for coverage entries per campaign (`--max-coverage-entries`). Reproducers always bypass the cap.
+- **Safety warning:** loud startup warning if `--no-auth` is used while listening on `0.0.0.0`/`::`.
+
+Client:
+- **Resume paging loop:** automatically pages `corpus_since_request` until caught up (when `corpusSync.behavior.resume=true`).
+- **Enforces `ingest.maxPerMinute`:** coverage entry ingestion is token-bucket limited; reproducers always allowed.
+- **Stricter `ingest.maxPending`:** refuses new coverage GETs when pending is too large; reproducers use high-priority enqueue.
+- **Publish batching:** implements `publish.batchSize` via `corpus_publish_batch` when the hub advertises `supports_batch`.
+
+### Known limitations / notes
+
+- Hub is **ws:// only** (no built-in TLS). Use a reverse proxy / TLS terminator (Caddy/Nginx/stunnel) for `wss://`.
+- Client TLS knobs exist in config (`corpusSync.tls`) but are not wired yet (v1 uses wuss defaults).
+- `validate=execute` currently behaves the same as `replay` (cheap structural validation only).
+- **Nix build gotcha:** `flake.nix` uses a git-cleaned source tree. If you add new `.hs` files and don't `git add` them, `nix build` will fail with errors like `Could not find module ‘Echidna.CorpusSync’`.
+- Build note: because this repo uses `NoFieldSelectors` + `OverloadedRecordDot`, the corpus sync code imports the relevant record types with `(..)` (e.g., `EConfig`, `CampaignConf`, `CorpusSyncBehaviorConf`) so record-dot field access can be resolved by GHC.

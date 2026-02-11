@@ -3,17 +3,15 @@ module Echidna.UI.Report where
 import Control.Monad (forM)
 import Control.Monad.Reader (MonadReader, MonadIO (liftIO), asks, ask)
 import Data.IORef (readIORef)
-import Data.Function (on)
-import Data.List (nub, sortBy)
+import Data.List (nub)
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes, fromJust)
 import Data.Text (unpack)
 import Data.Text qualified as T
 import Data.Time (LocalTime)
-import Text.Printf (printf)
 
 import EVM.Format (showTraceTree)
-import EVM.Types (W256, VM(labels), VMType(Concrete), FunctionSelector, CheatCallStats(..))
+import EVM.Types (W256, VM(labels), VMType(Concrete))
 
 import Echidna.ABI (encodeSig, GenDict(..))
 import Echidna.ContractName (contractNameForAddr)
@@ -48,47 +46,6 @@ ppTotalCalls workerStates = "Total calls: " <> show calls
   where
     calls = sum $ (.ncalls) <$> workerStates
 
-mergeCheatCallStats :: [WorkerState] -> Map.Map FunctionSelector CheatCallStats
-mergeCheatCallStats workerStates =
-  Map.unionsWith combine (map (.cheatCallStats) workerStates)
-  where
-    combine a b = CheatCallStats
-      { totalCalls = a.totalCalls + b.totalCalls
-      , successCalls = a.successCalls + b.successCalls
-      , failedCalls = a.failedCalls + b.failedCalls
-      }
-
-formatCheatCallStats :: Map.Map FunctionSelector CheatCallStats -> [String]
-formatCheatCallStats stats =
-  map formatEntry $ sortBy (flip compare `on` (\(_, st) -> st.totalCalls)) (Map.toList stats)
-  where
-    formatEntry (sel, st) =
-      let total = st.totalCalls
-          ok = st.successCalls
-          bad = st.failedCalls
-          pct :: Double
-          pct = if total == 0 then 0 else fromIntegral ok * 100 / fromIntegral total
-      in show sel <> ": " <> show ok <> "/" <> show total <> " ok (" <> printf "%.1f%%" pct <> "), " <> show bad <> " failed"
-
-formatCheatStatsSummary :: Map.Map FunctionSelector CheatCallStats -> String
-formatCheatStatsSummary stats =
-  case sortBy (flip compare `on` (\(_, st) -> st.totalCalls)) (Map.toList stats) of
-    [] -> ""
-    (sel, st):rest ->
-      let total = st.totalCalls
-          ok = st.successCalls
-          pct :: Double
-          pct = if total == 0 then 0 else fromIntegral ok * 100 / fromIntegral total
-          more = if null rest then "" else " +" <> show (length rest)
-      in "tracked: " <> show sel <> " " <> show ok <> "/" <> show total <> " (" <> printf "%.1f%%" pct <> ")" <> more
-
-ppCheatCallStats :: [WorkerState] -> String
-ppCheatCallStats workerStates =
-  let merged = mergeCheatCallStats workerStates
-  in if Map.null merged
-     then "Tracked calls: none"
-     else "Tracked calls:\n" <> unlines (("  " <>) <$> formatCheatCallStats merged)
-
 ppSeed :: [WorkerState] -> String
 ppSeed [] = "unknown" -- should not happen
 ppSeed (WorkerState { genDict = GenDict { defSeed = seed } } : _) = show seed
@@ -101,7 +58,6 @@ ppCampaign workerStates = do
   let seedPrinted = "Seed: " <> ppSeed workerStates
   corpusPrinted <- ppCorpus
   let callsPrinted = ppTotalCalls workerStates
-  let cheatStatsPrinted = ppCheatCallStats workerStates
   logicalCoveragePrinted <- ppLogicalCoverage workerStates
   pure $ unlines
     [ testsPrinted
@@ -109,7 +65,6 @@ ppCampaign workerStates = do
     , corpusPrinted
     , seedPrinted
     , callsPrinted
-    , cheatStatsPrinted
     , logicalCoveragePrinted
     ]
 

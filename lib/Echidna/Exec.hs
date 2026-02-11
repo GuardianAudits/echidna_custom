@@ -9,9 +9,11 @@ import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.Reader (MonadReader, ask, asks)
 import Control.Monad.ST (ST, stToIO, RealWorld)
 import Control.Monad.State.Strict (MonadState(get, put), execState, runStateT, MonadIO(liftIO), gets, modify', execStateT)
+import Control.Exception (SomeException, try)
 import Data.Bits
 import Data.ByteString qualified as BS
 import Data.IORef (readIORef, newIORef, writeIORef, modifyIORef')
+import Data.List (isPrefixOf)
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe, fromJust)
 import Data.Text qualified as T
@@ -19,8 +21,11 @@ import Data.Vector qualified as V
 import Data.Vector.Unboxed.Mutable qualified as VMut
 import Optics.Core
 import Optics.State.Operators
+import System.Directory (canonicalizePath, doesFileExist, getCurrentDirectory, getFileSize)
 import System.Environment (lookupEnv, getEnvironment)
+import System.FilePath ((</>), addTrailingPathSeparator, isAbsolute)
 import System.Process qualified as P
+import Text.Read (readMaybe)
 
 import EVM (bytecode, replaceCodeOfSelf, loadContract, exec1, vmOpIx, clearTStorages)
 import EVM.ABI
@@ -29,6 +34,7 @@ import EVM.Effects (defaultConfig)
 import EVM.Exec (exec, vmForEthrunCreation)
 import EVM.Fetch qualified
 import EVM.Format (hexText, showTraceTree)
+import EVM.GetCode qualified as GetCode
 import EVM.Types hiding (Env, Gas)
 
 import Echidna.Events (emptyEvents)
@@ -78,6 +84,59 @@ vmExcept traceInfo e =
   let trace = uncurry showTraceTree <$> traceInfo
   in throwM $
     case VMFailure e of {Illegal -> IllegalExec e; _ -> UnknownFailure e trace}
+
+defaultMaxReadFileBytes :: Integer
+defaultMaxReadFileBytes = 5 * 1024 * 1024
+
+getFsRoot :: IO FilePath
+getFsRoot =
+  lookupEnv "ECHIDNA_FS_ROOT" >>= \case
+    Just r -> pure r
+    Nothing ->
+      lookupEnv "HEVM_FS_ROOT" >>= \case
+        Just r -> pure r
+        Nothing -> getCurrentDirectory
+
+getFsMaxBytes :: IO Integer
+getFsMaxBytes =
+  lookupEnv "ECHIDNA_FS_MAX_BYTES" >>= \case
+    Just raw | Just n <- readMaybe raw, n > 0 -> pure n
+    _ ->
+      lookupEnv "HEVM_FS_MAX_BYTES" >>= \case
+        Just raw | Just n <- readMaybe raw, n > 0 -> pure n
+        _ -> pure defaultMaxReadFileBytes
+
+safeReadFileUnderRoot :: FilePath -> Integer -> FilePath -> IO (Either String BS.ByteString)
+safeReadFileUnderRoot root maxBytes path = do
+  eRootAbs <- (try (canonicalizePath root) :: IO (Either SomeException FilePath))
+  case eRootAbs of
+    Left e -> pure $ Left ("readFile: invalid root: " <> show e)
+    Right rootAbs -> do
+      let candidate = if isAbsolute path then path else rootAbs </> path
+      eFileAbs <- (try (canonicalizePath candidate) :: IO (Either SomeException FilePath))
+      case eFileAbs of
+        Left e -> pure $ Left ("readFile: cannot canonicalize path: " <> show e)
+        Right fileAbs -> do
+          let rootPrefix = addTrailingPathSeparator rootAbs
+          let inRoot = fileAbs == rootAbs || rootPrefix `isPrefixOf` fileAbs
+          if not inRoot then
+            pure $ Left "readFile: path escapes ECHIDNA_FS_ROOT"
+          else do
+            exists <- doesFileExist fileAbs
+            if not exists then
+              pure $ Left "readFile: file does not exist"
+            else do
+              eSize <- (try (getFileSize fileAbs) :: IO (Either SomeException Integer))
+              case eSize of
+                Left e -> pure $ Left ("readFile: cannot stat file: " <> show e)
+                Right sz ->
+                  if sz > maxBytes then
+                    pure $ Left ("readFile: file too large (" <> show sz <> " bytes)")
+                  else do
+                    eBs <- (try (BS.readFile fileAbs) :: IO (Either SomeException BS.ByteString))
+                    pure $ case eBs of
+                      Left e -> Left ("readFile: read failed: " <> show e)
+                      Right bs -> Right bs
 
 execTxWith
   :: (MonadIO m, MonadState (VM Concrete) m, MonadReader Env m, MonadThrow m)
@@ -169,6 +228,18 @@ execTxWith executeTx tx = do
         fromEVM (continuation $ fromMaybe "" value)
         runFully -- resume execution
 
+      Just (PleaseReadFile path continuation) -> do
+        root <- liftIO getFsRoot
+        maxBytes <- liftIO getFsMaxBytes
+        res <- liftIO $ safeReadFileUnderRoot root maxBytes path
+        fromEVM (continuation res)
+        runFully -- resume execution
+
+      Just (PleaseGetCode artifactRef continuation) -> do
+        res <- liftIO $ GetCode.getCodeFromEnv GetCode.PreferEchidna artifactRef
+        fromEVM (continuation res)
+        runFully -- resume execution
+
       -- No queries to answer, the tx is fully executed and the result is final
       _ -> pure vmResult
 
@@ -181,7 +252,6 @@ execTxWith executeTx tx = do
       calldataBeforeVMReset <- gets (.state.calldata)
       callvalueBeforeVMReset <- gets (.state.callvalue)
       burnedGas <- gets (.burned)
-      cheatStatsBeforeVMReset <- gets (.cheatCallStats)
       -- If a transaction reverts reset VM to state before the transaction.
       put vmBeforeTx
       -- Undo reset of some of the VM state.
@@ -193,7 +263,6 @@ execTxWith executeTx tx = do
       #traces .= tracesBeforeVMReset
       #state % #codeContract .= codeContractBeforeVMReset
       #burned .= burnedGas
-      #cheatCallStats .= cheatStatsBeforeVMReset
     (VMFailure x, _) -> do
       dapp <- asks (.dapp)
       vm <- get

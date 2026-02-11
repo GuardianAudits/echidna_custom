@@ -193,21 +193,13 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      </div>\n\
 \      <div class=\"kpis\" id=\"kpis\"></div>\n\
 \    </section>\n\
-\    <section class=\"card\" style=\"grid-column: span 7;\">\n\
+\    <section class=\"card\" style=\"grid-column: span 12;\">\n\
 \      <div class=\"section-title\">\n\
 \        <h2>Handlers (All calls)</h2>\n\
 \        <input class=\"search\" id=\"handlerSearch\" placeholder=\"Filter handlers…\" />\n\
 \      </div>\n\
 \      <div style=\"max-height:360px; overflow:auto;\">\n\
 \        <table class=\"table\" id=\"handlersTable\"></table>\n\
-\      </div>\n\
-\    </section>\n\
-\    <section class=\"card\" style=\"grid-column: span 5;\">\n\
-\      <div class=\"section-title\">\n\
-\        <h2>Cheatcode Stats</h2>\n\
-\      </div>\n\
-\      <div style=\"max-height:360px; overflow:auto;\">\n\
-\        <table class=\"table\" id=\"cheatTable\"></table>\n\
 \      </div>\n\
 \    </section>\n\
 \    <section class=\"card\" style=\"grid-column: span 7;\">\n\
@@ -461,22 +453,6 @@ mcpDashboardHtml = "<!doctype html>\n\
 \        ${rows || '<tr><td colspan=\"6\" class=\"muted\">No handlers recorded yet.</td></tr>'}\n\
 \      `;\n\
 \    }\n\
-\    function renderCheatStats(stats) {\n\
-\      const rows = (stats || [])\n\
-\        .sort((a,b) => (b.totalCalls||0) - (a.totalCalls||0))\n\
-\        .map(st => `\n\
-\          <tr>\n\
-\            <td><span class=\"pill\">${st.selector}</span></td>\n\
-\            <td>${st.totalCalls || 0}</td>\n\
-\            <td>${st.successCalls || 0}</td>\n\
-\            <td>${st.failedCalls || 0}</td>\n\
-\          </tr>\n\
-\        `).join('');\n\
-\      qs('#cheatTable').innerHTML = `\n\
-\        <tr><th>Selector</th><th>Total</th><th>Success</th><th>Failed</th></tr>\n\
-\        ${rows || '<tr><td colspan=\"4\" class=\"muted\">No cheatcode stats yet.</td></tr>'}\n\
-\      `;\n\
-\    }\n\
 \    function renderLogicalCoverage(coverage) {\n\
 \      const methods = coverage.methods || {};\n\
 \      const search = qs('#logicalSearch').value.toLowerCase();\n\
@@ -618,17 +594,15 @@ mcpDashboardHtml = "<!doctype html>\n\
 \      });\n\
 \    }\n\
 \    async function refreshStatic() {\n\
-\      const [status, handlers, logical, cheat] = await Promise.all([\n\
+\      const [status, handlers, logical] = await Promise.all([\n\
 \        readResource('echidna://run/status'),\n\
 \        readResource('echidna://run/handlers'),\n\
-\        readResource('echidna://stats/logical-coverage'),\n\
-\        readResource('echidna://stats/cheatcodes')\n\
+\        readResource('echidna://stats/logical-coverage')\n\
 \      ]);\n\
 \      renderKpis(status);\n\
 \      renderHandlers(handlers.handlers || {});\n\
 \      renderLogicalCoverage(logical);\n\
 \      renderCoverageSummary();\n\
-\      renderCheatStats(cheat.stats || []);\n\
 \    }\n\
 \    async function refreshCoverageLines() {\n\
 \      const now = Date.now();\n\

@@ -174,6 +174,13 @@ data Options = Options
   , cliMcpMaxEvents    :: Maybe Int
   , cliMcpMaxReverts   :: Maybe Int
   , cliMcpMaxTxs       :: Maybe Int
+  , cliCorpusSyncEnabled :: Maybe Bool
+  , cliCorpusSyncUrl :: Maybe Text
+  , cliCorpusSyncToken :: Maybe Text
+  , cliCorpusSyncValidate :: Maybe CorpusSyncValidate
+  , cliCorpusSyncSampleRate :: Maybe Double
+  , cliCorpusSyncMaxEntryBytes :: Maybe Int
+  , cliCorpusSyncStopOnFleetStop :: Maybe Bool
   , cliTestMode         :: Maybe TestMode
   , cliAllContracts     :: Bool
   , cliTimeout          :: Maybe Int
@@ -214,6 +221,14 @@ mcpTransport = eitherReader $ \s ->
     "unix" -> Right MCPUnix
     "stdio" -> Right MCPStdio
     _ -> Left "invalid mcp transport (expected http|unix|stdio)"
+
+corpusSyncValidate :: ReadM CorpusSyncValidate
+corpusSyncValidate = eitherReader $ \s ->
+  case map toLower s of
+    "none" -> Right CorpusSyncValidateNone
+    "replay" -> Right CorpusSyncValidateReplay
+    "execute" -> Right CorpusSyncValidateExecute
+    _ -> Left "invalid corpus sync validate mode (expected none|replay|execute)"
 
 options :: Parser Options
 options = Options . NE.fromList
@@ -282,6 +297,27 @@ options = Options . NE.fromList
   <*> optional (option auto $ long "mcp-max-txs"
     <> metavar "N"
     <> help "MCP ring buffer size for transactions.")
+  <*> optional (option bool $ long "corpus-sync"
+    <> metavar "BOOL"
+    <> help "Enable distributed corpus sync over WebSockets (default: false).")
+  <*> optional (option (T.pack <$> str) $ long "corpus-sync-url"
+    <> metavar "URL"
+    <> help "WebSocket URL for corpus sync hub (ws:// or wss://).")
+  <*> optional (option (T.pack <$> str) $ long "corpus-sync-token"
+    <> metavar "TOKEN"
+    <> help "Bearer token for corpus sync hub (optional).")
+  <*> optional (option corpusSyncValidate $ long "corpus-sync-validate"
+    <> metavar "MODE"
+    <> help "Corpus sync ingest validation mode: none|replay|execute (default: replay).")
+  <*> optional (option auto $ long "corpus-sync-sample-rate"
+    <> metavar "FLOAT"
+    <> help "Corpus sync ingest sample rate for coverage entries (0.0-1.0). Default: 1.0.")
+  <*> optional (option auto $ long "corpus-sync-max-entry-bytes"
+    <> metavar "N"
+    <> help "Max corpus entry size (bytes) to publish/ingest (default: 262144).")
+  <*> optional (option bool $ long "corpus-sync-stop-on-fleet-stop"
+    <> metavar "BOOL"
+    <> help "Stop this instance when hub broadcasts fleet_stop (default: true).")
   <*> optional (option str $ long "test-mode"
     <> help "Test mode to use. Either 'property', 'assertion', 'dapptest', 'optimization', 'overflow' or 'exploration'" )
   <*> switch (long "all-contracts"
@@ -354,6 +390,7 @@ overrideConfig config Options{..} = do
            , campaignConf = overrideCampaignConf config.campaignConf
            , uiConf = overrideUiConf config.uiConf
            , mcpConf = overrideMcpConf config.mcpConf
+           , corpusSyncConf = overrideCorpusSyncConf config.corpusSyncConf
            , rpcUrl = cliRpcUrl <|> envRpcUrl <|> config.rpcUrl
            , rpcBlock = cliRpcBlock <|> envRpcBlock <|> config.rpcBlock
            , etherscanApiKey = envEtherscanApiKey <|> config.etherscanApiKey
@@ -415,6 +452,23 @@ overrideConfig config Options{..} = do
       , maxReverts = fromMaybe mcpConf.maxReverts cliMcpMaxReverts
       , maxTxs = fromMaybe mcpConf.maxTxs cliMcpMaxTxs
       }
+
+    overrideCorpusSyncConf csConf =
+      csConf
+        { enabled = fromMaybe csConf.enabled cliCorpusSyncEnabled
+        , url = fromMaybe csConf.url cliCorpusSyncUrl
+        , token = cliCorpusSyncToken <|> csConf.token
+        , publish = csConf.publish
+            { maxEntryBytes = fromMaybe csConf.publish.maxEntryBytes cliCorpusSyncMaxEntryBytes
+            }
+        , ingest = csConf.ingest
+            { validate = fromMaybe csConf.ingest.validate cliCorpusSyncValidate
+            , sampleRate = fromMaybe csConf.ingest.sampleRate cliCorpusSyncSampleRate
+            }
+        , behavior = csConf.behavior
+            { stopOnFleetStop = fromMaybe csConf.behavior.stopOnFleetStop cliCorpusSyncStopOnFleetStop
+            }
+        }
 
 printProjectName :: Maybe Text -> IO ()
 printProjectName (Just name) = putStrLn $

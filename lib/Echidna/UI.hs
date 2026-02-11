@@ -34,6 +34,7 @@ import EVM.Types (Addr, Contract, VM, VMType(Concrete), W256)
 
 import Echidna.ABI
 import Echidna.Campaign (runWorker, spawnListener)
+import Echidna.CorpusSync (CorpusSyncHandle(..), startCorpusSync)
 import Echidna.Output.Corpus (saveCorpusEvent)
 import Echidna.Output.JSON qualified
 import Echidna.LogicalCoverage (mergeLogicalCoverage, formatLogicalStatus)
@@ -99,6 +100,11 @@ ui vm dict initialCorpus cliSelectedContract = do
   workers <- forM (zip corpusChunks [0..(nworkers-1)]) $
     uncurry (spawnWorker env perWorkerTestLimit)
 
+  corpusSyncHandle <- liftIO $ do
+    let stopWorkersIO :: IO ()
+        stopWorkersIO = stopWorkers workers
+    startCorpusSync env vm cliSelectedContract stopWorkersIO
+
   case effectiveMode of
     Interactive -> do
       -- Channel to push events to update UI
@@ -163,6 +169,8 @@ ui vm dict initialCorpus cliSelectedContract = do
       -- wait for all events to be processed
       forM_ [uiEventsForwarderStopVar, corpusSaverStopVar] takeMVar
 
+      forM_ corpusSyncHandle $ \CorpusSyncHandle{wait=waitIO} -> liftIO waitIO
+
       liftIO $ killThread ticker
 
       states <- workerStates workers
@@ -204,6 +212,8 @@ ui vm dict initialCorpus cliSelectedContract = do
 
       -- wait for all events to be processed
       forM_ [uiEventsForwarderStopVar, corpusSaverStopVar] takeMVar
+
+      forM_ corpusSyncHandle $ \CorpusSyncHandle{wait=waitIO} -> liftIO waitIO
 
       liftIO $ killThread ticker
 
@@ -401,7 +411,6 @@ statusLine env states lastUpdateRef = do
   now <- getTimestamp
   let totalCalls = sum ((.ncalls) <$> states)
   let totalGas = sum ((.totalGas) <$> states)
-  let cheatStatsSummary = formatCheatStatsSummary (mergeCheatCallStats states)
   let logicalCoverageSummary =
         if env.cfg.campaignConf.logicalCoverage
           then formatLogicalStatus
@@ -433,6 +442,5 @@ statusLine env states lastUpdateRef = do
     <> ", cov: " <> show points
     <> ", corpus: " <> show (Corpus.corpusSize corpus)
     <> shrinkingPart
-    <> (if null cheatStatsSummary then "" else ", " <> cheatStatsSummary)
     <> (if null logicalCoverageSummary then "" else ", " <> logicalCoverageSummary)
     <> ", gas/s: " <> show gasPerSecond

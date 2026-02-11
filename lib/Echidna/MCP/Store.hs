@@ -20,7 +20,6 @@ import Data.Map.Strict (Map)
 import Data.Sequence (Seq(..))
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
-import EVM.Types (FunctionSelector, CheatCallStats)
 import Echidna.LogicalCoverage.Types (LogicalCoverage)
 
 import Echidna.MCP.Types
@@ -77,7 +76,6 @@ data MCPState = MCPState
   , txs        :: IORef (RingBuffer MCPTx)
   , handlers   :: IORef (Map Text HandlerStat)
   , logicalByWorker :: IORef (Map Int LogicalCoverage)
-  , cheatByWorker :: IORef (Map Int (Map FunctionSelector CheatCallStats))
   , counters   :: IORef MCPRunCounters
   , control    :: MCPControl
   , phase      :: IORef Text
@@ -91,7 +89,6 @@ newMCPState maxEvents maxReverts maxTxs = do
   txsRef <- newRingBuffer maxTxs
   handlersRef <- newIORef mempty
   logicalRef <- newIORef mempty
-  cheatRef <- newIORef mempty
   countersRef <- newIORef (MCPRunCounters 0 0 0)
   gate <- newMVar ()
   stopRef <- newIORef False
@@ -103,7 +100,6 @@ newMCPState maxEvents maxReverts maxTxs = do
     , txs = txsRef
     , handlers = handlersRef
     , logicalByWorker = logicalRef
-    , cheatByWorker = cheatRef
     , counters = countersRef
     , control = MCPControl gate stopRef
     , phase = phaseRef

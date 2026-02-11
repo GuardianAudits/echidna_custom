@@ -56,6 +56,7 @@ instance FromJSON EConfigWithUsage where
               <*> txConfParser
               <*> (UIConf <$> v ..:? "timeout" <*> formatParser)
               <*> mcpConfParser
+              <*> corpusSyncConfParser
               <*> v ..:? "allEvents" ..!= False
               <*> v ..:? "rpcUrl"
               <*> v ..:? "rpcBlock"
@@ -172,6 +173,62 @@ instance FromJSON EConfigWithUsage where
             <*> mcpObj .:? "maxReverts" .!= defaultMCPConf.maxReverts
             <*> mcpObj .:? "maxTxs" .!= defaultMCPConf.maxTxs
           ) mv
+
+      corpusSyncConfParser = v ..:? "corpusSync" >>= \case
+        Nothing -> pure defaultCorpusSyncConf
+        Just cv -> lift $ withObject "corpusSync" (\csObj -> do
+          publishConf <- csObj .:? "publish" >>= \case
+            Nothing -> pure defaultCorpusSyncPublishConf
+            Just pv -> withObject "publish" (\pObj ->
+              CorpusSyncPublishConf
+                <$> pObj .:? "coverage" .!= defaultCorpusSyncPublishConf.coverage
+                <*> pObj .:? "failures" .!= defaultCorpusSyncPublishConf.failures
+                <*> pObj .:? "maxPerSecond" .!= defaultCorpusSyncPublishConf.maxPerSecond
+                <*> pObj .:? "burst" .!= defaultCorpusSyncPublishConf.burst
+                <*> pObj .:? "maxEntryBytes" .!= defaultCorpusSyncPublishConf.maxEntryBytes
+                <*> pObj .:? "batchSize" .!= defaultCorpusSyncPublishConf.batchSize
+              ) pv
+
+          ingestConf <- csObj .:? "ingest" >>= \case
+            Nothing -> pure defaultCorpusSyncIngestConf
+            Just iv -> withObject "ingest" (\iObj ->
+              CorpusSyncIngestConf
+                <$> iObj .:? "enabled" .!= defaultCorpusSyncIngestConf.enabled
+                <*> iObj .:? "validate" .!= defaultCorpusSyncIngestConf.validate
+                <*> iObj .:? "maxPending" .!= defaultCorpusSyncIngestConf.maxPending
+                <*> iObj .:? "maxPerMinute" .!= defaultCorpusSyncIngestConf.maxPerMinute
+                <*> iObj .:? "sampleRate" .!= defaultCorpusSyncIngestConf.sampleRate
+                <*> iObj .:? "weightPolicy" .!= defaultCorpusSyncIngestConf.weightPolicy
+                <*> iObj .:? "constantWeight" .!= defaultCorpusSyncIngestConf.constantWeight
+              ) iv
+
+          behaviorConf <- csObj .:? "behavior" >>= \case
+            Nothing -> pure defaultCorpusSyncBehaviorConf
+            Just bv -> withObject "behavior" (\bObj ->
+              CorpusSyncBehaviorConf
+                <$> bObj .:? "stopOnFleetStop" .!= defaultCorpusSyncBehaviorConf.stopOnFleetStop
+                <*> bObj .:? "resume" .!= defaultCorpusSyncBehaviorConf.resume
+                <*> bObj .:? "reconnectBackoffMs" .!= defaultCorpusSyncBehaviorConf.reconnectBackoffMs
+              ) bv
+
+          tlsConf <- csObj .:? "tls" >>= \case
+            Nothing -> pure defaultCorpusSyncTLSConf
+            Just tv -> withObject "tls" (\tObj ->
+              CorpusSyncTLSConf
+                <$> tObj .:? "insecureSkipVerify" .!= defaultCorpusSyncTLSConf.insecureSkipVerify
+                <*> tObj .:? "caFile" .!= defaultCorpusSyncTLSConf.caFile
+              ) tv
+
+          CorpusSyncConf
+            <$> csObj .:? "enabled" .!= defaultCorpusSyncConf.enabled
+            <*> csObj .:? "url" .!= defaultCorpusSyncConf.url
+            <*> csObj .:? "token" .!= defaultCorpusSyncConf.token
+            <*> csObj .:? "campaignOverride" .!= defaultCorpusSyncConf.campaignOverride
+            <*> pure publishConf
+            <*> pure ingestConf
+            <*> pure behaviorConf
+            <*> pure tlsConf
+          ) cv
 
       formatParser = fromMaybe Interactive <$> (v ..:? "format" >>= \case
         Just ("text" :: String) -> pure . Just . NonInteractive $ Text

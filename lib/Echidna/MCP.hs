@@ -5,7 +5,6 @@ module Echidna.MCP
   ( startMCPServer
   , recordTx
   , recordLogicalCoverage
-  , recordCheatStats
   , mcpCheckpoint
   , setMCPPhase
   ) where
@@ -30,7 +29,6 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time (LocalTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
-import Data.List (foldl')
 import Data.String (fromString)
 import System.IO (hPutStrLn, stderr)
 import Network.HTTP.Types (status200, status400, status404)
@@ -43,8 +41,6 @@ import EVM.Types
   ( VM(..)
   , VMResult(..)
   , VMType(Concrete)
-  , CheatCallStats(..)
-  , FunctionSelector
   , EvmError(..)
   , Expr(ConcreteBuf)
   )
@@ -106,10 +102,6 @@ mcpCheckpoint Env{mcpState} =
 recordLogicalCoverage :: (MonadIO m) => MCPState -> Int -> LogicalCoverage -> m ()
 recordLogicalCoverage st wid cov =
   liftIO $ atomicModifyIORef' st.logicalByWorker $ \m -> (Map.insert wid cov m, ())
-
-recordCheatStats :: (MonadIO m) => MCPState -> Int -> Map FunctionSelector CheatCallStats -> m ()
-recordCheatStats st wid stats =
-  liftIO $ atomicModifyIORef' st.cheatByWorker $ \m -> (Map.insert wid stats m, ())
 
 -- | Record a transaction, handler stats, and reverts/traces if applicable.
 recordTx
@@ -247,7 +239,6 @@ resourcesListResult = object
       , resource "echidna://run/trace" "Trace (by id)"
       , resource "echidna://coverage/summary" "Coverage summary"
       , resource "echidna://coverage/lines" "Coverage line hits"
-      , resource "echidna://stats/cheatcodes" "Cheatcode stats"
       , resource "echidna://stats/logical-coverage" "Logical coverage"
       ]
   ]
@@ -284,7 +275,6 @@ toolsListResult = object
       , tool "get_traces" "Get traces"
       , tool "get_logical_coverage" "Get logical coverage"
       , tool "get_coverage_hits" "Get coverage line hits"
-      , tool "get_cheat_stats" "Get cheatcode stats"
       , tool "pause" "Pause run"
       , tool "resume" "Resume run"
       , tool "stop" "Stop run"
@@ -326,7 +316,6 @@ runTool env st name args =
     "get_traces" -> readResource env st (resourceWithArgs "echidna://run/traces" args)
     "get_logical_coverage" -> readResource env st "echidna://stats/logical-coverage"
     "get_coverage_hits" -> readResource env st "echidna://coverage/lines"
-    "get_cheat_stats" -> readResource env st "echidna://stats/cheatcodes"
     _ -> pure (object ["error" .= ("unknown tool" :: Text)])
 
 resourceWithArgs :: Text -> Maybe Value -> Text
@@ -359,7 +348,6 @@ readResource env st uri = do
     "echidna://run/trace" -> runTrace st query
     "echidna://coverage/summary" -> coverageSummary env
     "echidna://coverage/lines" -> coverageLines env
-    "echidna://stats/cheatcodes" -> cheatStats st
     "echidna://stats/logical-coverage" -> logicalCoverage env st
     _ -> pure (object ["error" .= ("unknown resource" :: Text)])
 
@@ -459,21 +447,6 @@ coverageLines Env{dapp = dappInfo, coverageRefInit, coverageRefRuntime, cfg = EC
       hits = coverageLineHits sources' covMap contracts coverageExcludes'
   pure $ toJSON hits
 
-cheatStats :: MCPState -> IO Value
-cheatStats st = do
-  m <- readIORef st.cheatByWorker
-  let merged = mergeCheatStats (Map.elems m)
-  let entries =
-        [ object
-            [ "selector" .= (show sel)
-            , "totalCalls" .= st'.totalCalls
-            , "successCalls" .= st'.successCalls
-            , "failedCalls" .= st'.failedCalls
-            ]
-        | (sel, st') <- Map.toList merged
-        ]
-  pure $ object ["stats" .= entries]
-
 logicalCoverage :: Env -> MCPState -> IO Value
 logicalCoverage Env{cfg = EConfig{campaignConf = c}} st = do
   let CampaignConf{logicalCoverageMaxReasons = maxReasons} = c
@@ -484,8 +457,8 @@ logicalCoverage Env{cfg = EConfig{campaignConf = c}} st = do
 recordEvent :: MCPState -> LocalTime -> CampaignEvent -> IO ()
 recordEvent st ts ev = do
   let (wid, wtype, etype, payload) = case ev of
-        Worker.WorkerEvent wid wtype e ->
-          (Just wid, Just (workerTypeText wtype), workerEventType e, toJSON e)
+        Worker.WorkerEvent wid' wtype' e ->
+          (Just wid', Just (workerTypeText wtype'), workerEventType e, toJSON e)
         Worker.Failure msg -> (Nothing, Nothing, "Failure", toJSON msg)
         Worker.ReproducerSaved f -> (Nothing, Nothing, "ReproducerSaved", toJSON f)
       event = MCPEvent 0 (formatTimestamp ts) wid wtype etype payload
@@ -507,16 +480,6 @@ workerEventType = \case
   TxSequenceReplayed {} -> "TxSequenceReplayed"
   TxSequenceReplayFailed {} -> "TxSequenceReplayFailed"
   WorkerStopped {} -> "WorkerStopped"
-
-mergeCheatStats :: [Map FunctionSelector CheatCallStats] -> Map FunctionSelector CheatCallStats
-mergeCheatStats = foldl' (Map.unionWith mergeStat) mempty
-  where
-    mergeStat a b =
-      CheatCallStats
-        { totalCalls = a.totalCalls + b.totalCalls
-        , successCalls = a.successCalls + b.successCalls
-        , failedCalls = a.failedCalls + b.failedCalls
-        }
 
 isSuccessResult :: VMResult Concrete -> Bool
 isSuccessResult = \case
