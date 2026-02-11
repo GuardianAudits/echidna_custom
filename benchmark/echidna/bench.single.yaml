@@ -1,0 +1,18 @@
+testMode: "property"
+format: "json"
+quiet: true
+
+workers: 4
+seqLen: 350
+testLimit: 20000
+shrinkLimit: 500
+stopOnFail: true
+
+coverage: true
+coverageFormats: ["txt", "lcov"]
+coverageLineHits: false
+logicalCoverage: false
+
+corpusDir: "out/bench_single/corpus"
+coverageDir: "out/bench_single/coverage"
+

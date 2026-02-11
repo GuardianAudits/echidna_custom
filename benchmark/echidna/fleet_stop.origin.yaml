@@ -1,0 +1,44 @@
+testMode: "property"
+format: "text"
+quiet: true
+
+seed: 9200
+workers: 1
+seqLen: 350
+testLimit: 5000
+shrinkLimit: 500
+stopOnFail: true
+
+coverage: false
+logicalCoverage: false
+
+# Whitelist only step(), so the origin node progresses quickly to the failing state.
+filterBlacklist: false
+filterFunctions:
+  - "FleetStopTarget.step(uint256)"
+
+corpusDir: "out/fleet_stop_origin/corpus"
+
+corpusSync:
+  enabled: true
+  url: "ws://127.0.0.1:9014/ws"
+  token: null
+  publish:
+    coverage: true
+    failures: true
+    maxPerSecond: 2
+    burst: 20
+    maxEntryBytes: 262144
+    batchSize: 20
+  ingest:
+    enabled: true
+    validate: "replay"
+    maxPending: 2000
+    maxPerMinute: 600
+    sampleRate: 1.0
+    weightPolicy: "constant"
+    constantWeight: 1
+  behavior:
+    stopOnFleetStop: true
+    resume: true
+

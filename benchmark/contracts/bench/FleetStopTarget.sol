@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+// Target for testing distributed failure propagation + fleet_stop behavior.
+contract FleetStopTarget {
+    uint256 public state;
+    uint256 public noiseAcc;
+
+    uint256 internal constant FINAL_STATE = 16;
+
+    function step(uint256 x) public {
+        // Same maze as CorpusMaze (keep deterministic + comparable).
+        if (state == 0) {
+            if ((x & 0xF) == 0) state = 1;
+        } else if (state == 1) {
+            if ((x & 0xF) == 1) state = 2;
+        } else if (state == 2) {
+            if ((x & 0xF) == 2) state = 3;
+        } else if (state == 3) {
+            if ((x & 0xF) == 3) state = 4;
+        } else if (state == 4) {
+            if ((x & 0xF) == 4) state = 5;
+        } else if (state == 5) {
+            if ((x & 0xF) == 5) state = 6;
+        } else if (state == 6) {
+            if ((x & 0xF) == 6) state = 7;
+        } else if (state == 7) {
+            if ((x & 0xF) == 7) state = 8;
+        } else if (state == 8) {
+            if ((x & 0xF) == 8) state = 9;
+        } else if (state == 9) {
+            if ((x & 0xF) == 9) state = 10;
+        } else if (state == 10) {
+            if ((x & 0xF) == 10) state = 11;
+        } else if (state == 11) {
+            if ((x & 0xF) == 11) state = 12;
+        } else if (state == 12) {
+            if ((x & 0xF) == 12) state = 13;
+        } else if (state == 13) {
+            if ((x & 0xF) == 13) state = 14;
+        } else if (state == 14) {
+            if ((x & 0xF) == 14) state = 15;
+        } else if (state == 15) {
+            if ((x & 0xF) == 15) state = 16;
+        } else {
+            // solved
+        }
+    }
+
+    // "Noise" function used for fleet_stop listener nodes: whitelisting this
+    // method prevents progressing toward the failing state.
+    function noise(uint256 x) public {
+        unchecked {
+            noiseAcc ^= x;
+        }
+    }
+
+    // Failure oracle: once any node finds this, it should publish a failure and
+    // the hub can broadcast fleet_stop to stop other nodes.
+    function echidna_target_unsolved() public returns (bool) {
+        return state != FINAL_STATE;
+    }
+}

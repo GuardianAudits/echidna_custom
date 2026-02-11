@@ -1,0 +1,44 @@
+testMode: "property"
+format: "text"
+quiet: true
+
+seed: 9000
+workers: 1
+seqLen: 200
+testLimit: 1000000000
+shrinkLimit: 0
+stopOnFail: false
+
+coverage: false
+logicalCoverage: false
+
+# Whitelist only noise(), so this node will not reach the failing state on its own.
+filterBlacklist: false
+filterFunctions:
+  - "FleetStopTarget.noise(uint256)"
+
+corpusDir: "out/fleet_stop_listener/corpus"
+
+corpusSync:
+  enabled: true
+  url: "ws://127.0.0.1:9014/ws"
+  token: null
+  publish:
+    coverage: true
+    failures: true
+    maxPerSecond: 2
+    burst: 20
+    maxEntryBytes: 262144
+    batchSize: 20
+  ingest:
+    enabled: true
+    validate: "replay"
+    maxPending: 2000
+    maxPerMinute: 600
+    sampleRate: 1.0
+    weightPolicy: "constant"
+    constantWeight: 1
+  behavior:
+    stopOnFleetStop: true
+    resume: true
+

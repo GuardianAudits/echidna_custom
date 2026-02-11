@@ -1,0 +1,41 @@
+testMode: "property"
+format: "json"
+quiet: true
+
+# Workers are typically set per-node via CLI.
+seqLen: 350
+testLimit: 20000
+shrinkLimit: 500
+stopOnFail: true
+
+coverage: true
+coverageFormats: ["txt", "lcov"]
+coverageLineHits: false
+logicalCoverage: false
+
+corpusDir: "out/bench_fleet/corpus"
+coverageDir: "out/bench_fleet/coverage"
+
+corpusSync:
+  enabled: true
+  url: "ws://127.0.0.1:9010/ws"
+  token: null
+  publish:
+    coverage: true
+    failures: true
+    maxPerSecond: 2
+    burst: 20
+    maxEntryBytes: 262144
+    batchSize: 20
+  ingest:
+    enabled: true
+    validate: "replay"
+    maxPending: 2000
+    maxPerMinute: 600
+    sampleRate: 1.0
+    weightPolicy: "constant"
+    constantWeight: 1
+  behavior:
+    stopOnFleetStop: true
+    resume: true
+

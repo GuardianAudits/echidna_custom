@@ -1,0 +1,45 @@
+testMode: "property"
+format: "text"
+quiet: true
+
+seed: 7001
+workers: 1
+seqLen: 80
+testLimit: 2000
+shrinkLimit: 0
+stopOnFail: false
+
+disableSlither: true
+allowFFI: false
+
+coverage: true
+coverageFormats: ["txt"]
+coverageLineHits: false
+logicalCoverage: false
+
+corpusDir: "out/corpus_sync_publisher/corpus"
+coverageDir: "out/corpus_sync_publisher/coverage"
+
+corpusSync:
+  enabled: true
+  url: "ws://127.0.0.1:9016/ws"
+  token: null
+  publish:
+    coverage: true
+    failures: false
+    maxPerSecond: 10
+    burst: 50
+    maxEntryBytes: 262144
+    batchSize: 20
+  ingest:
+    enabled: false
+    validate: "replay"
+    maxPending: 2000
+    maxPerMinute: 600
+    sampleRate: 1.0
+    weightPolicy: "constant"
+    constantWeight: 1
+  behavior:
+    stopOnFleetStop: false
+    resume: false
+
