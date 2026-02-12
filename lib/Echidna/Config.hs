@@ -95,6 +95,7 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "stopOnFail" ..!= False
         <*> v ..:? "seqLen" ..!= defaultSequenceLength
         <*> v ..:? "shrinkLimit" ..!= defaultShrinkLimit
+        <*> v ..:? "showShrinkingEvery" ..!= Nothing
         <*> (v ..:? "coverage" <&> \case Just False -> Nothing;  _ -> Just mempty)
         <*> v ..:? "seed"
         <*> v ..:? "dictFreq" ..!= 0.40
@@ -114,6 +115,7 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "symExecMaxIters"    ..!= defaultSymExecMaxIters
         <*> v ..:? "symExecAskSMTIters" ..!= defaultSymExecAskSMTIters
         <*> v ..:? "symExecMaxExplore"  ..!= defaultSymExecMaxExplore
+        <*> v ..:? "saveEvery"          ..!= Nothing
         <*> v ..:? "logicalCoverage" ..!= True
         <*> v ..:? "logicalCoverageTopN" ..!= defaultLogicalCoverageTopN
         <*> v ..:? "logicalCoverageMaxReasons" ..!= defaultLogicalCoverageMaxReasons

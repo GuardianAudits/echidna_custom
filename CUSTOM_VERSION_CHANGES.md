@@ -8,6 +8,10 @@ This document summarizes **all custom changes** applied so far in this repo + it
 - `getCode(string)`
 - `parseJsonBytes(string,string)`
 
+It also tracks custom Echidna runtime features added in this branch:
+- `showShrinkingEvery` (realtime shrinking progress in text mode)
+- `saveEvery` (periodic coverage snapshots during campaign execution)
+
 ---
 
 ## 1) Overview of the cheatcodes
@@ -168,7 +172,69 @@ Notes:
 - If `ECHIDNA_ARTIFACTS_ROOT` points directly to your artifact directory, selector paths should usually be root-relative (e.g., `MyContract.json`, not `artifacts/MyContract.json`).
 - Echidna-side env precedence for getCode is Echidna-first (`ECHIDNA_*` before `HEVM_*`), matching `readFile` behavior.
 
-### Cheatcode test coverage (current)
+### Realtime shrinking progress (`showShrinkingEvery`)
+Adds optional periodic printing of intermediate shrinking state in **non-interactive text mode**.
+
+Config / CLI:
+```yaml
+showShrinkingEvery: 10
+```
+```bash
+--show-shrinking-every 10
+```
+
+Behavior:
+- Default is disabled (`null` / unset).
+- When enabled with `N > 0`, prints progress every `N` shrink iterations per active test.
+- Output includes test name, iteration (`current/shrinkLimit`), transaction count, and current call sequence.
+- Interactive UI mode is unchanged.
+
+Implementation wiring:
+- Config parse: `lib/Echidna/Config.hs`
+- Runtime field: `lib/Echidna/Types/Campaign.hs`
+- Output loop: `lib/Echidna/UI.hs`
+- CLI override: `src/Main.hs`
+- MCP run config exposes `showShrinkingEvery`: `lib/Echidna/MCP.hs`
+
+### Periodic coverage snapshots (`saveEvery`)
+Adds optional periodic coverage snapshots while the campaign is running.
+
+Config / CLI:
+```yaml
+saveEvery: 5
+```
+```bash
+--save-every 5
+```
+
+Behavior:
+- Default is disabled (`null` / unset).
+- When enabled with `M > 0`, Echidna spawns a background saver thread that writes snapshots every `M` minutes.
+- Snapshot directory: `<coverageDir or corpusDir>/coverage-snapshots/`
+- Reuses existing coverage format settings (`coverageFormats`) and exclusions (`coverageExcludes`).
+- If `coverageLineHits=true`, also writes timestamped `coverage_hits.<ts>.json` files in snapshot dir.
+- Saver thread is stopped cleanly on campaign exit.
+
+Implementation wiring:
+- Runtime field: `lib/Echidna/Types/Campaign.hs`
+- Config parse: `lib/Echidna/Config.hs`
+- Saver implementation: `lib/Echidna/Output/Source.hs` (`spawnPeriodicSaver`)
+- Lifecycle wiring: `src/Main.hs`
+- MCP run config exposes `saveEvery`: `lib/Echidna/MCP.hs`
+
+### Compiler warning / compatibility cleanups
+The integration also included explicit cleanups for current/future GHC compatibility:
+
+- Fixed non-interactive shrink progress compile issue by evaluating `ppTx` under `ReaderT Env`:
+  - `lib/Echidna/UI.hs` now uses `runReaderT (mapM (ppTx ...)) env` in the ticker path.
+- Addressed GADT mono-local-binds warnings by enabling `GADTs` where needed:
+  - `lib/Echidna/LogicalCoverage.hs`
+  - `lib/Echidna/MCP.hs`
+- Addressed ambiguous duplicate-record-field update warning by replacing the update with explicit `WorkerState` reconstruction:
+  - `lib/Echidna/Campaign.hs` now sets `logicalCoverage` via constructor fields (no ambiguous record update)
+  - avoids relying on deprecated type-directed disambiguation behavior.
+
+### Cheatcode + runtime feature test coverage (current)
 
 Echidna tests:
 - `src/test/Tests/Cheat.hs` registers `getCode` coverage in both modes:
@@ -179,6 +245,16 @@ Echidna tests:
   - `tests/solidity/cheat/getCode_noffi.yaml`
 - Artifact fixtures:
   - `tests/solidity/cheat/getcode_artifacts/*.json`
+- Config parsing/default coverage for `showShrinkingEvery` + `saveEvery`:
+  - `src/test/Tests/Config.hs`
+  - `tests/solidity/basic/show-shrinking-test.yaml`
+  - `tests/solidity/basic/save-every-test.yaml`
+- Shrinking behavior checks with display config enabled:
+  - `src/test/Tests/Shrinking.hs`
+- Periodic save wiring guard checks:
+  - `src/test/Tests/PeriodicSave.hs`
+- Coverage test includes `saveEvery` config passthrough check:
+  - `src/test/Tests/Coverage.hs`
 
 Local smoke project tests:
 - `solidity_project/contracts/smoke/CheatcodesSmoke.sol` covers selector matrix + bad-input reverts for `getCode`.

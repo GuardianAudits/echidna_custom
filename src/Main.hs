@@ -2,6 +2,8 @@
 
 module Main where
 
+import Control.Concurrent (killThread)
+import Control.Exception (finally)
 import Control.Monad (unless, when, forM_)
 import Control.Monad.Random (getRandomR)
 import Control.Monad.Reader (runReaderT, liftIO)
@@ -75,8 +77,15 @@ main = withUtf8 $ withCP65001 $ do
   startMCPServer env
 
   initialCorpus <- loadInitialCorpus env
+  let periodicBaseDir = cfg.campaignConf.coverageDir <|> cfg.campaignConf.corpusDir
+      contracts = Map.elems env.dapp.solcByName
+  periodicSaverTid <- case periodicBaseDir of
+    Just dir -> spawnPeriodicSaver env seed dir buildOutput.sources contracts
+    Nothing -> pure Nothing
   -- start ui and run tests
-  campaignStates <- runReaderT (ui vm dict initialCorpus cliSelectedContract) env
+  campaignStates <-
+    runReaderT (ui vm dict initialCorpus cliSelectedContract) env
+      `finally` forM_ periodicSaverTid killThread
   forM_ env.mcpState $ \st -> do
     let MCPState{phase = phaseRef} = st
     phaseVal <- readIORef phaseRef
@@ -188,11 +197,13 @@ data Options = Options
   , cliRpcBlock         :: Maybe Word64
   , cliRpcUrl           :: Maybe Text
   , cliShrinkLimit      :: Maybe Int
+  , cliShowShrinkingEvery :: Maybe Int
   , cliSeqLen           :: Maybe Int
   , cliContractAddr     :: Maybe Addr
   , cliDeployer         :: Maybe Addr
   , cliSender           :: [Addr]
   , cliSeed             :: Maybe Int
+  , cliSaveEvery        :: Maybe Int
   , cliDisableSlither   :: Bool
   , cliCryticArgs       :: Maybe String
   , cliSolcArgs         :: Maybe String
@@ -337,6 +348,9 @@ options = Options . NE.fromList
   <*> optional (option auto $ long "shrink-limit"
     <> metavar "INTEGER"
     <> help ("Number of tries to attempt to shrink a failing sequence of transactions. Default is " ++ show defaultShrinkLimit))
+  <*> optional (option auto $ long "show-shrinking-every"
+    <> metavar "INTEGER"
+    <> help "Show intermediate shrinking progress every N shrink iterations (text mode only).")
   <*> optional (option auto $ long "seq-len"
     <> metavar "INTEGER"
     <> help ("Number of transactions to generate during testing. Default is " ++ show defaultSequenceLength))
@@ -352,6 +366,9 @@ options = Options . NE.fromList
   <*> optional (option auto $ long "seed"
     <> metavar "SEED"
     <> help "Run with a specific seed.")
+  <*> optional (option auto $ long "save-every"
+    <> metavar "MINUTES"
+    <> help "Save coverage data periodically every N minutes during campaign execution.")
   <*> switch (long "disable-slither"
     <> help "Disable running Slither.")
   <*> optional (option str $ long "crytic-args"
@@ -416,8 +433,10 @@ overrideConfig config Options{..} = do
       , coverageLineHits = fromMaybe campaignConf.coverageLineHits cliCoverageLineHits
       , testLimit = fromMaybe campaignConf.testLimit cliTestLimit
       , shrinkLimit = fromMaybe campaignConf.shrinkLimit cliShrinkLimit
+      , showShrinkingEvery = cliShowShrinkingEvery <|> campaignConf.showShrinkingEvery
       , seqLen = fromMaybe campaignConf.seqLen cliSeqLen
       , seed = cliSeed <|> campaignConf.seed
+      , saveEvery = cliSaveEvery <|> campaignConf.saveEvery
       , workers = cliWorkers <|> campaignConf.workers
       , serverPort = cliServerPort <|> campaignConf.serverPort
       , symExec = fromMaybe campaignConf.symExec cliSymExec

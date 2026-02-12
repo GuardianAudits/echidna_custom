@@ -23,6 +23,8 @@ data CampaignConf = CampaignConf
     -- reset the state to avoid unrecoverable states/save memory\"
   , shrinkLimit        :: Int
     -- ^ Maximum number of candidate sequences to evaluate while shrinking
+  , showShrinkingEvery :: Maybe Int
+    -- ^ Optional interval (iterations) to display shrinking progress in text mode
   , knownCoverage      :: Maybe CoverageMap
     -- ^ If applicable, initially known coverage. If this is 'Nothing',
     -- Echidna won't collect coverage information (and will go faster)
@@ -70,6 +72,8 @@ data CampaignConf = CampaignConf
   , symExecMaxExplore :: Integer
     -- ^ Maximum number of states to explore before we stop exploring it.
     -- Only relevant if symExec is True
+  , saveEvery          :: Maybe Int
+    -- ^ Optional interval (minutes) to save periodic coverage snapshots
   , logicalCoverage :: Bool
     -- ^ Whether to collect logical coverage statistics
   , logicalCoverageTopN :: Int

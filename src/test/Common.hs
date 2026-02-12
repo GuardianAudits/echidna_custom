@@ -19,6 +19,8 @@ module Common
   , overrideQuiet
   , loadSolTests
   , checkCoverageUsesCorpusDir
+  , checkShowShrinkingEveryConfig
+  , checkSaveEveryConfig
   , gasConsumedGt
   ) where
 
@@ -262,3 +264,13 @@ checkCoverageUsesCorpusDir expectedCorpusDir (env, _) = do
   case (env.cfg.campaignConf.corpusDir, env.cfg.campaignConf.coverageDir) of
     (Just corpusDir, Nothing) -> pure $ corpusDir == expectedCorpusDir
     _ -> pure False
+
+-- | Check that showShrinkingEvery config is properly set.
+checkShowShrinkingEveryConfig :: Maybe Int -> (Env, WorkerState) -> IO Bool
+checkShowShrinkingEveryConfig expected (env, _) =
+  pure $ env.cfg.campaignConf.showShrinkingEvery == expected
+
+-- | Check that saveEvery config is properly set.
+checkSaveEveryConfig :: Maybe Int -> (Env, WorkerState) -> IO Bool
+checkSaveEveryConfig expected (env, _) =
+  pure $ env.cfg.campaignConf.saveEvery == expected

@@ -3,14 +3,18 @@
 
 module Echidna.Output.Source where
 
-import Control.Monad (unless)
+import Control.Concurrent (ThreadId, forkIO, threadDelay)
+import Control.Monad (forever, unless, when)
+import Data.Aeson (encode)
 import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as LBS
 import Data.Foldable
 import Data.List (nub, sort)
 import Data.List.NonEmpty qualified as NE
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe, catMaybes)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word64)
 import Data.Sequence qualified as Seq
 import Data.Set qualified as S
@@ -38,7 +42,67 @@ import Echidna.SourceAnalysis.Slither (AssertLocation(..), assertLocationList, S
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config (Env(..), EConfig(..))
 import Echidna.Types.Coverage (OpIx, unpackTxResults, FrozenCoverageMap, CoverageFileType (..), mergeCoverageMaps)
+import Echidna.Types.Solidity (SolConf(..))
 import Echidna.Types.Tx (TxResult(..))
+
+-- | Spawn a background thread that periodically writes coverage snapshots.
+spawnPeriodicSaver
+  :: Env
+  -> Int -- ^ Seed used to tag output filenames.
+  -> FilePath -- ^ Base output directory.
+  -> SourceCache
+  -> [SolcContract]
+  -> IO (Maybe ThreadId)
+spawnPeriodicSaver env seed baseDir sources contracts =
+  case env.cfg.campaignConf.saveEvery of
+    Just minutes
+      | minutes > 0
+      , not (null baseDir)
+      , not (null env.cfg.campaignConf.coverageFormats) -> do
+          let intervalMicroseconds = minutes * 60 * 1_000_000
+          tid <- forkIO $ forever $ do
+            threadDelay intervalMicroseconds
+            saveCoverageSnapshot env seed baseDir sources contracts
+          pure (Just tid)
+    _ -> pure Nothing
+
+saveCoverageSnapshot
+  :: Env
+  -> Int
+  -> FilePath
+  -> SourceCache
+  -> [SolcContract]
+  -> IO ()
+saveCoverageSnapshot env seed baseDir sources contracts = do
+  let cfg = env.cfg
+      snapshotDir = baseDir </> "coverage-snapshots"
+  createDirectoryIfMissing True snapshotDir
+
+  snapshotTime <- round <$> getPOSIXTime
+  covMap <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
+
+  mapM_
+    (\fileType ->
+      saveCoverage
+        fileType
+        cfg.campaignConf.coverageLineHits
+        (seed + snapshotTime)
+        snapshotDir
+        sources
+        contracts
+        covMap
+        cfg.projectName
+        cfg.campaignConf.coverageExcludes
+    )
+    cfg.campaignConf.coverageFormats
+
+  when cfg.campaignConf.coverageLineHits $ do
+    let hits = coverageLineHits sources covMap contracts cfg.campaignConf.coverageExcludes
+        hitsPath = snapshotDir </> printf "coverage_hits.%d.json" snapshotTime
+    LBS.writeFile hitsPath (encode hits)
+
+  when (not cfg.solConf.quiet) $
+    putStrLn $ "[periodic-save] coverage snapshot saved at " <> show snapshotTime
 
 data LineCov = LineCov
   { hits :: Word64

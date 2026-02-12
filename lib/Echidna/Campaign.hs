@@ -617,7 +617,16 @@ evalSeq vm0 execFunc = go vm0 [] where
             -- `logicalCoverage` field.
             let setWorkerLogicalCoverage :: WorkerState -> WorkerState
                 setWorkerLogicalCoverage workerState =
-                  workerState { logicalCoverage = updated }
+                  WorkerState
+                    { workerId = workerState.workerId
+                    , genDict = workerState.genDict
+                    , newCoverage = workerState.newCoverage
+                    , ncallseqs = workerState.ncallseqs
+                    , ncalls = workerState.ncalls
+                    , totalGas = workerState.totalGas
+                    , logicalCoverage = updated
+                    , runningThreads = workerState.runningThreads
+                    }
             modify' setWorkerLogicalCoverage
             wid <- gets (.workerId)
             forM_ env.mcpState $ \st -> recordLogicalCoverage st wid updated

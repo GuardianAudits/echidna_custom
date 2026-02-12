@@ -25,7 +25,6 @@ import Control.Concurrent.STM.TBQueue
   )
 import Control.Exception (SomeException, catch, displayException)
 import Control.Monad (forM, forM_, forever, unless, void, when)
-import Control.Applicative (optional)
 import Data.Aeson
   ( FromJSON(..)
   , Value(..)
@@ -43,6 +42,7 @@ import Data.Aeson
 import Data.Aeson.Types (parseEither)
 import Data.Aeson.Key (fromText)
 import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
 import Data.ByteString.Lazy.Char8 qualified as LBS8
 import Data.Char (toLower)
@@ -84,7 +84,6 @@ import Echidna.CorpusSync.Protocol
   , EntryMeta(..)
   , EntryType(..)
   )
-import Echidna.Types.Tx (Tx)
 
 data LogFormat = LogText | LogJson deriving (Show, Eq)
 
@@ -543,7 +542,7 @@ stopConnQueues ConnState{..} = atomically $ do
   stopQ connGetQ
 
 getOrCreateCampaign :: HubState -> Text -> IO CampaignState
-getOrCreateCampaign HubState{campaigns, opts=HubOptions{..}} camp = do
+getOrCreateCampaign HubState{campaigns} camp = do
   existing <- readTVarIO campaigns
   case Map.lookup camp existing of
     Just cs -> pure cs
@@ -1405,7 +1404,7 @@ loadIndexLines file =
       if eof
         then pure (reverse acc, bad)
         else do
-          line <- BS.hGetLine h
+          line <- BS8.hGetLine h
           case eitherDecodeStrict' line of
             Left _ -> go acc (bad + 1) h
             Right v -> go (v : acc) bad h

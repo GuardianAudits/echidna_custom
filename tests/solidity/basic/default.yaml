@@ -24,6 +24,8 @@ stopOnFail: false
 seqLen: 100
 #shrinkLimit determines how much effort is spent shrinking failing sequences
 shrinkLimit: 5000
+# show intermediate shrinking progress every N iterations (text mode only); by default is disabled
+showShrinkingEvery: null
 #coverage controls coverage guided testing
 coverage: true
 #format can be "text" or "json" for different output (human or machine readable)
@@ -80,6 +82,8 @@ allowFFI: false
 corpusDir: null
 #directory to save coverage reports; by default is disabled
 coverageDir: null
+# save coverage snapshots every N minutes during campaign execution; by default is disabled
+saveEvery: null
 # list of file formats to save coverage reports in; default is all possible formats
 coverageFormats: ["txt","html","lcov"]
 # list of glob patterns for files to exclude from coverage reports

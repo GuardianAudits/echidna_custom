@@ -1,6 +1,8 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{-# LANGUAGE GADTs #-}
+
 module Echidna.MCP
   ( startMCPServer
   , recordTx
@@ -371,6 +373,8 @@ runConfig Env{cfg = EConfig{campaignConf = c}} = do
         { testLimit = testLimit'
         , seqLen = seqLen'
         , shrinkLimit = shrinkLimit'
+        , showShrinkingEvery = showShrinkingEvery'
+        , saveEvery = saveEvery'
         , coverageFormats = coverageFormats'
         , coverageLineHits = coverageLineHits'
         , logicalCoverage = logicalCoverage'
@@ -380,6 +384,8 @@ runConfig Env{cfg = EConfig{campaignConf = c}} = do
     [ "testLimit" .= testLimit'
     , "seqLen" .= seqLen'
     , "shrinkLimit" .= shrinkLimit'
+    , "showShrinkingEvery" .= showShrinkingEvery'
+    , "saveEvery" .= saveEvery'
     , "coverageFormats" .= coverageFormats'
     , "coverageLineHits" .= coverageLineHits'
     , "logicalCoverage" .= logicalCoverage'

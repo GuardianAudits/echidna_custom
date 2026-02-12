@@ -1,5 +1,7 @@
 {-# LANGUAGE RecordWildCards #-}
 
+{-# LANGUAGE GADTs #-}
+
 module Echidna.LogicalCoverage
   ( LogicalCoverage(..)
   , CallStats(..)

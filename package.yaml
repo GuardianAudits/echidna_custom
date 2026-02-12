@@ -107,6 +107,7 @@ executables:
       - -threaded
       - -rtsopts
       - '"-with-rtsopts=-A64m -N"'
+      - -Wno-unused-packages
     when:
       - condition: (os(linux) || os(windows)) && flag(static)
         ghc-options:
@@ -138,6 +139,7 @@ executables:
       - -threaded
       - -rtsopts
       - '"-with-rtsopts=-N"'
+      - -Wno-unused-packages
 
 tests:
   echidna-testsuite:

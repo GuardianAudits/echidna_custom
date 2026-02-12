@@ -2,7 +2,7 @@ module Tests.Coverage (coverageTests) where
 
 import Test.Tasty (TestTree, testGroup)
 
-import Common (testContract, passed, countCorpus, checkCoverageUsesCorpusDir)
+import Common (testContract, passed, countCorpus, checkCoverageUsesCorpusDir, checkSaveEveryConfig)
 
 coverageTests :: TestTree
 coverageTests = testGroup "Coverage tests"
@@ -23,5 +23,9 @@ coverageTests = testGroup "Coverage tests"
   -- Test coverage fallback to corpus directory
   , testContract "basic/revert.sol"              (Just "basic/corpus-fallback-test.yaml")
       [ ("uses corpusDir for coverage",           checkCoverageUsesCorpusDir "test-corpus")]
+
+  -- Test saveEvery config is properly wired through.
+  , testContract "basic/revert.sol"              (Just "basic/save-every-test.yaml")
+      [ ("saveEvery config set to 5",             checkSaveEveryConfig (Just 5))]
 
   ]
