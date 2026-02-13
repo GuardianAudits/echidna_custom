@@ -19,7 +19,7 @@ import EVM.Dapp (DappInfo)
 import Echidna.ABI (ppAbiValue, GenDict(..))
 import Echidna.Events (Events, extractEvents)
 import Echidna.Types.Campaign (CampaignConf(..), WorkerState(..))
-import Echidna.Types.Config (Env(..))
+import Echidna.Types.Config (EConfig(..), Env(..))
 import Echidna.Types.Coverage (CoverageInfo, mergeCoverageMaps)
 import Echidna.Types.Test (EchidnaTest(..))
 import Echidna.Types.Test qualified as T
@@ -114,11 +114,17 @@ instance ToJSON Transaction where
     , "value" .= value
     ]
 
-encodeCampaign :: Env -> [WorkerState] -> IO L.ByteString
-encodeCampaign env workerStates = do
-  tests <- traverse readIORef env.testRefs
-  frozenCov <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
-  let CampaignConf{seed = campaignSeed} = env.cfg.campaignConf
+encodeCampaign
+  Env
+    { cfg = EConfig{campaignConf = campaignConf'}
+    , dapp
+    , testRefs
+    , coverageRefInit
+    , coverageRefRuntime
+    } workerStates = do
+  tests <- traverse readIORef testRefs
+  frozenCov <- mergeCoverageMaps dapp coverageRefInit coverageRefRuntime
+  let CampaignConf{seed = campaignSeed} = campaignConf'
   let baseSeed = fromMaybe (case workerStates of
                     [] -> 0
                     s:_ -> s.genDict.defSeed - s.workerId) campaignSeed
@@ -126,7 +132,7 @@ encodeCampaign env workerStates = do
   pure $ encode Campaign
     { _success = True
     , _error = Nothing
-    , _tests = mapTest env.dapp <$> tests
+    , _tests = mapTest dapp <$> tests
     , seed = baseSeed
     , workerSeeds = workerSeeds
     , seedDerivation = pack "base_plus_worker_id"

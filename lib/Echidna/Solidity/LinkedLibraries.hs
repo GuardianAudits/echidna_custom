@@ -122,7 +122,7 @@ collectArtifactJsons root = do
     go :: FilePath -> IO [FilePath]
     go dir = do
       entries <- listDirectory dir
-      concat <$> forM entries (\entry -> do
+      concat <$> forM entries $ \entry -> do
         let fp = dir </> entry
         isDir <- doesDirectoryExist fp
         isFile <- doesFileExist fp
@@ -131,7 +131,6 @@ collectArtifactJsons root = do
           else if isFile && isJson fp && not (isMetadataJson fp)
             then pure [fp]
             else pure []
-      )
 
 -- | Scan artifacts for contract-level link references and all unique library keys.
 scanArtifactsForLinkReferences :: [FilePath] -> IO (Map Text (Set Text), Set Text)
