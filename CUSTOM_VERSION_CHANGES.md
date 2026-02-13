@@ -4,6 +4,11 @@ This document summarizes **all custom changes** applied so far in this repo + it
 
 - `snapshot()`
 - `revertTo(uint256)`
+- `deal(address,uint256)`
+- `deal(address,address,uint256)`
+- `deal(address,address,uint256,bool)`
+- `record()`
+- `accesses(address)`
 - `readFile(string)`
 - `getCode(string)`
 - `parseJsonBytes(string,string)`
@@ -37,7 +42,39 @@ It also tracks custom Echidna runtime features added in this branch:
 
 ---
 
-### C) `readFile(string path)`
+### C) `deal(...)` (native ETH + ERC20)
+**Purpose:** Deterministically set native ETH balances and ERC20 balances (Foundry/forge-std parity).
+
+**Semantics (confirmed):**
+- Native ETH:
+  - `deal(address who, uint256 give)` sets `who.balance = give`.
+- ERC20:
+  - `deal(address token, address to, uint256 give)` forces `token.balanceOf(to) == give` by mutating token storage.
+  - `deal(address token, address to, uint256 give, bool adjustTotalSupply)` additionally adjusts `totalSupply()` by `(give - prevBal)` when `adjustTotalSupply=true` using Solidity checked arithmetic (reverts with `Panic(0x11)` on under/overflow).
+- Uses a `StdStorage.checked_write`-style algorithm (like forge-std):
+  - `STATICCALL` into `balanceOf(to)` / `totalSupply()` to discover candidate storage slots via observed storage reads.
+  - Temporarily flips candidate slots to ensure the call result changes, then performs the write and verifies by re-calling.
+  - Reverts on: no storage reads, slot(s) not found, or write verification failure.
+- No `Transfer` events, no allowance updates.
+
+---
+
+### D) `record()` / `accesses(address)`
+**Purpose:** Foundry-compatible storage access recording for slot discovery and debugging.
+
+**Semantics (confirmed):**
+- `record()` enables recording of storage reads/writes performed by subsequent calls in the current transaction context.
+- `accesses(address c)` returns `(bytes32[] reads, bytes32[] writes)` for contract `c` since the last `record()`.
+- If `record()` has not been called yet, `accesses(...)` returns empty arrays (Foundry gotcha).
+- Subsequent calls to `record()` clear previous recorded data (Foundry behavior).
+- Foundry semantics: **every write also counts as a read**, so written slots appear in both arrays.
+
+**Implementation notes:**
+- Implemented by extending HEVM's `TxState.subState` with recording fields and recording on every `SLOAD` / `SSTORE`.
+
+---
+
+### E) `readFile(string path)`
 **Purpose:** Read a file from the local filesystem (sandboxed) and return its contents as `string`.
 
 **Semantics (confirmed):**
@@ -48,7 +85,7 @@ It also tracks custom Echidna runtime features added in this branch:
 
 ---
 
-### D) `parseJsonBytes(string json, string keyPath)`
+### F) `parseJsonBytes(string json, string keyPath)`
 **Purpose:** Parse JSON and extract a value as `bytes`.
 
 **Semantics (confirmed):**
@@ -62,7 +99,7 @@ It also tracks custom Echidna runtime features added in this branch:
 
 ---
 
-### E) `getCode(string artifactPath)`
+### G) `getCode(string artifactPath)`
 **Purpose:** Read contract creation bytecode from local artifact JSON files (Foundry-style selectors).
 
 **Semantics (confirmed):**
@@ -84,8 +121,10 @@ It also tracks custom Echidna runtime features added in this branch:
 
 ### Cheatcode implementation
 - **`hevm/src/EVM.hs`**
-  - `cheatActions` contains the custom cheatcodes (`snapshot`, `revertTo`, `readFile`, `getCode`, `parseJsonBytes`)
+  - `cheatActions` contains the custom cheatcodes (`snapshot`, `revertTo`, `deal`, `record`, `accesses`, `readFile`, `getCode`, `parseJsonBytes`)
   - `snapshot`/`revertTo` capture/restore helpers live here
+  - `deal` ERC20 overloads + `checked_write`/slot-discovery helpers live here
+  - `record`/`accesses` storage-access recording hooks + ABI return handling live here
   - `parseJsonBytes` JSON path + decoding helpers live here
   - `getCode` dispatch + ABI return/revert handling live here
 
@@ -261,6 +300,10 @@ Local smoke project tests:
 - `solidity_project/contracts/smoke/CheatcodesSmoke_NoFFI.sol` verifies `getCode` gate behavior when `allowFFI=false`.
 - `solidity_project/scripts/run_smoke.sh` exports `ECHIDNA_ARTIFACTS_ROOT`/`ECHIDNA_ARTIFACTS_MAX_BYTES` and runs full smoke sequence.
 
+HEVM tests/benchmarks:
+- `hevm/test/test.hs` adds concrete tests for ERC20 `deal` (no-adjust + adjust totalSupply).
+- `hevm/bench/bench-perf.hs` adds a `dealErc20` benchmark group to measure cheatcode overhead.
+
 ---
 
 ## 4) How to call the cheatcodes in Solidity
@@ -270,6 +313,10 @@ Local smoke project tests:
 interface IHevmCheatcodes {
     function snapshot() external returns (uint256 id);
     function revertTo(uint256 id) external returns (bool success);
+
+    function deal(address who, uint256 give) external;
+    function deal(address token, address to, uint256 give) external;
+    function deal(address token, address to, uint256 give, bool adjustTotalSupply) external;
 
     function readFile(string calldata path) external returns (string memory contents);
     function getCode(string calldata artifactPath) external returns (bytes memory creationBytecode);
@@ -290,6 +337,10 @@ uint256 id = hevm.snapshot();
 // mutate state
 bool ok = hevm.revertTo(id);
 require(ok, "revertTo failed");
+
+// Set ERC20 balances without minting/transfers (no Transfer event).
+hevm.deal(address(token), user, 1e18);
+hevm.deal(address(token), user, 1e18, true); // optionally adjust totalSupply()
 
 // Read a JSON fixture and extract bytes from it.
 string memory json = hevm.readFile("fixtures/input.json");
@@ -342,6 +393,8 @@ If your Nix setup disables import-from-derivation during evaluation, add:
 ## 6) Known limitations / notes
 
 - `snapshot()` and `revertTo()` are **concrete‑only**. Symbolic execution will throw `BadCheatCode`.
+- ERC20 `deal(token,to,give[,adjust])` is **concrete-only** in this branch.
+- ERC20 `deal` relies on storage-slot discovery via observed `SLOAD`s from `balanceOf(to)` / `totalSupply()` and may fail for tokens with packed balances, rebasing/custom accounting, or multi-slot balance computations.
 - Snapshots are **persistent**; there is no max count enforcement in v1.
 - Cheat‑environment state (`labels`, `osEnv`) is **not reverted** on `revertTo`, per current decision.
 - `readFile(string)` is gated by `allowFFI=true` and is sandboxed under `*_FS_ROOT` with a `*_FS_MAX_BYTES` cap.
