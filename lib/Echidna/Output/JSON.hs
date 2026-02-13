@@ -114,6 +114,7 @@ instance ToJSON Transaction where
     , "value" .= value
     ]
 
+encodeCampaign :: Env -> [WorkerState] -> IO L.ByteString
 encodeCampaign
   Env
     { cfg = EConfig{campaignConf = campaignConf'}
@@ -121,14 +122,17 @@ encodeCampaign
     , testRefs
     , coverageRefInit
     , coverageRefRuntime
-    } workerStates = do
+    }
+  workerStates = do
   tests <- traverse readIORef testRefs
   frozenCov <- mergeCoverageMaps dapp coverageRefInit coverageRefRuntime
   let CampaignConf{seed = campaignSeed} = campaignConf'
   let baseSeed = fromMaybe (case workerStates of
                     [] -> 0
-                    s:_ -> s.genDict.defSeed - s.workerId) campaignSeed
-      workerSeeds = fmap (\state -> WorkerSeed state.workerId state.genDict.defSeed) workerStates
+                    state:_ ->
+                      let WorkerState{workerId, genDict} = state
+                       in genDict.defSeed - workerId) campaignSeed
+      workerSeeds = fmap (\WorkerState{workerId, genDict} -> WorkerSeed workerId genDict.defSeed) workerStates
   pure $ encode Campaign
     { _success = True
     , _error = Nothing
