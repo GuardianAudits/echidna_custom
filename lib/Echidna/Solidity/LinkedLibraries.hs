@@ -5,7 +5,8 @@ module Echidna.Solidity.LinkedLibraries where
 import Control.Applicative ((<|>))
 import Control.Monad (forM, unless)
 import Data.Aeson (Object, Value(..), eitherDecodeStrict')
-import Data.Aeson.Key qualified as Aeson.Key
+import Data.Aeson.Key (Key)
+import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as BS
 import Data.List (intercalate, isPrefixOf, isSuffixOf, sort)
@@ -157,7 +158,7 @@ parseContractName fp obj =
   fromMaybeText (lookupText "contractName" <|> lookupText "sourceName" <|> Just defaultName)
   where
     lookupText :: Text -> Maybe Text
-    lookupText name = case KeyMap.lookup (Aeson.Key.fromText name) obj of
+    lookupText name = case KeyMap.lookup (AesonKey.fromText name) obj of
       Just (String v)
         | not (T.null (T.strip v)) -> Just (T.strip v)
       _ -> Nothing
@@ -326,7 +327,7 @@ autoConfigureFoundryLibraries solConf cliFilePath = do
       Set.union (extractLinksFromSection (lookupSection "bytecode")) (extractLinksFromSection (lookupSection "deployedBytecode"))
       where
         lookupSection :: Text -> Object
-        lookupSection k = case KeyMap.lookup (Aeson.Key.fromText k) obj of
+        lookupSection k = case KeyMap.lookup (AesonKey.fromText k) obj of
           Just (Object o) -> o
           _ -> mempty
 
@@ -336,17 +337,17 @@ autoConfigureFoundryLibraries solConf cliFilePath = do
             Set.fromList . catMaybes . concatMap extractSourceLinks . KeyMap.toList $ links
           _ -> mempty
 
-        extractSourceLinks :: (Aeson.Key, Value) -> [Maybe Text]
+        extractSourceLinks :: (Key, Value) -> [Maybe Text]
         extractSourceLinks (sourceKey, Object libs) =
-          let source = Aeson.Key.toText sourceKey
+          let source = AesonKey.toText sourceKey
           in if T.null (T.strip source)
             then []
             else [formatKey source libName | libName <- KeyMap.keys libs]
         extractSourceLinks _ = []
 
-        formatKey :: Text -> Aeson.Key -> Maybe Text
+        formatKey :: Text -> Key -> Maybe Text
         formatKey source libKey =
-          let lib = Aeson.Key.toText libKey
+          let lib = AesonKey.toText libKey
           in if T.null (T.strip lib)
             then Nothing
             else Just (source <> ":" <> lib)
