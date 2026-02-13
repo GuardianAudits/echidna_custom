@@ -87,10 +87,14 @@ genTx world deployedContracts = do
       fmap (forceAddr addr,) . snd <$> lookupUsingCodehash env.codehashMap c env.dapp sigMap
 
 genDelay :: MonadRandom m => W256 -> Set W256 -> m W256
-genDelay mv ds =
-  join $ oftenUsually fromDict randValue
-  where randValue = fromIntegral <$> getRandomR (1 :: Integer, fromIntegral mv)
-        fromDict = (`mod` (mv + 1)) <$> rElem' ds
+genDelay mv ds
+  | mv == 0 = pure 0
+  | otherwise = join $ oftenUsually fromDict randValue
+  where
+    randValue = fromIntegral <$> getRandomR (1 :: Integer, fromIntegral mv)
+    fromDict
+      | mv == maxBound = rElem' ds
+      | otherwise = (`mod` (mv + 1)) <$> rElem' ds
 
 genValue
   :: MonadRandom m

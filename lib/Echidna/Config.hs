@@ -141,12 +141,16 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "cryticArgs"      ..!= []
         <*> v ..:? "solcArgs"        ..!= ""
         <*> v ..:? "solcLibs"        ..!= []
+        <*> v ..:? "autoLinkLibraries" ..!= False
+        <*> v ..:? "autoLinkLibrariesStart" ..!= 0x10
+        <*> v ..:? "autoLinkLibrariesMax" ..!= 240
+        <*> v ..:? "autoLinkLibrariesOutDir" ..!= Nothing
         <*> v ..:? "quiet"           ..!= False
         <*> v ..:? "deployContracts" ..!= []
         <*> v ..:? "deployBytecodes" ..!= []
         <*> ((<|>) <$> v ..:? "allContracts"
-                   -- TODO: keep compatible with the old name for a while
-                   <*> lift (v .:? "multi-abi")) ..!= False
+                    -- TODO: keep compatible with the old name for a while
+                    <*> lift (v .:? "multi-abi")) ..!= False
         <*> mode
         <*> v ..:? "testDestruction" ..!= False
         <*> v ..:? "allowFFI"        ..!= False

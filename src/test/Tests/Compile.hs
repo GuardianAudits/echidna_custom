@@ -39,5 +39,5 @@ loadFails :: FilePath -> Maybe Text -> String -> (SolException -> Bool) -> TestT
 loadFails fp c e p = testCase fp . catch tryLoad $ assertBool e . p where
   tryLoad = do
     let cfg = testConfig
-    buildOutput <- compileContracts cfg.solConf (pure fp)
-    void $ loadSolTests cfg buildOutput c
+    (resolvedSolConf, buildOutput) <- compileContracts cfg.solConf (pure fp)
+    void $ loadSolTests (cfg { solConf = resolvedSolConf }) buildOutput c

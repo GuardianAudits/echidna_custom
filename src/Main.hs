@@ -64,20 +64,22 @@ main = withUtf8 $ withCP65001 $ do
     maybe (pure (EConfigWithUsage defaultConfig mempty mempty)) parseConfig cliConfigFilepath
   cfg <- overrideConfig loadedCfg opts
 
-  printProjectName cfg.projectName
+  (configuredSolConf, buildOutput) <- compileContracts cfg.solConf cliFilePath
+  let cfgWithAutoLink = cfg { solConf = configuredSolConf }
 
-  unless cfg.solConf.quiet $
+  printProjectName cfgWithAutoLink.projectName
+
+  unless cfgWithAutoLink.solConf.quiet $
     forM_ ks $ hPutStrLn stderr . ("Warning: unused option: " ++) . Aeson.Key.toString
 
-  buildOutput <- compileContracts cfg.solConf cliFilePath
-
   -- take the seed from config, otherwise generate a new one
-  seed <- maybe (getRandomR (0, maxBound)) pure cfg.campaignConf.seed
-  (vm, env, dict) <- prepareContract cfg cliFilePath buildOutput cliSelectedContract seed
+  seed <- maybe (getRandomR (0, maxBound)) pure cfgWithAutoLink.campaignConf.seed
+  let cfgWithSeed = cfgWithAutoLink { campaignConf = cfgWithAutoLink.campaignConf { seed = Just seed } }
+  (vm, env, dict) <- prepareContract cfgWithSeed cliFilePath buildOutput cliSelectedContract seed
   startMCPServer env
 
   initialCorpus <- loadInitialCorpus env
-  let periodicBaseDir = cfg.campaignConf.coverageDir <|> cfg.campaignConf.corpusDir
+  let periodicBaseDir = cfgWithAutoLink.campaignConf.coverageDir <|> cfgWithAutoLink.campaignConf.corpusDir
       contracts = Map.elems env.dapp.solcByName
   periodicSaverTid <- case periodicBaseDir of
     Just dir -> spawnPeriodicSaver env seed dir buildOutput.sources contracts
@@ -99,20 +101,20 @@ main = withUtf8 $ withCP65001 $ do
   Onchain.saveRpcCache env
 
   -- save corpus
-  case cfg.campaignConf.corpusDir of
+  case cfgWithAutoLink.campaignConf.corpusDir of
     Nothing -> pure ()
     Just dir -> do
-      measureIO cfg.solConf.quiet "Saving test reproducers" $
+      measureIO cfgWithAutoLink.solConf.quiet "Saving test reproducers" $
         saveTxs env (dir </> "reproducers") (filter (not . null) $ (.reproducer) <$> tests)
 
-      measureIO cfg.solConf.quiet "Saving corpus" $ do
+      measureIO cfgWithAutoLink.solConf.quiet "Saving corpus" $ do
         corpus <- readIORef env.corpusRef
         saveTxs env (dir </> "coverage") (snd <$> Set.toList corpus)
 
       let isLargeOrSolved Solved = True
           isLargeOrSolved (Large _) = True
           isLargeOrSolved _ = False
-      measureIO cfg.solConf.quiet "Saving foundry reproducers" $ do
+      measureIO cfgWithAutoLink.solConf.quiet "Saving foundry reproducers" $ do
         let foundryDir = dir </> "foundry"
         liftIO $ createDirectoryIfMissing True foundryDir
         forM_ tests $ \test ->
@@ -128,10 +130,10 @@ main = withUtf8 $ withCP65001 $ do
 
 
   -- save coverage reports
-  let coverageDir = cfg.campaignConf.coverageDir <|> cfg.campaignConf.corpusDir
+  let coverageDir = cfgWithAutoLink.campaignConf.coverageDir <|> cfgWithAutoLink.campaignConf.corpusDir
   case coverageDir of
     Nothing -> pure ()
-    Just dir -> unless (null cfg.campaignConf.coverageFormats) $ measureIO cfg.solConf.quiet "Saving coverage" $ do
+    Just dir -> unless (null cfgWithAutoLink.campaignConf.coverageFormats) $ measureIO cfgWithAutoLink.solConf.quiet "Saving coverage" $ do
       -- We need runId to have a unique directory to save files under so they
       -- don't collide with the next runs. We use the current time for this
       -- as it orders the runs chronologically.
@@ -144,15 +146,15 @@ main = withUtf8 $ withCP65001 $ do
       let contracts = Map.elems env.dapp.solcByName
       saveCoverages env runId dir buildOutput.sources contracts
 
-      when cfg.campaignConf.coverageLineHits $ do
+  when cfgWithAutoLink.campaignConf.coverageLineHits $ do
         covMap <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
-        let lineHits = coverageLineHits buildOutput.sources covMap contracts cfg.campaignConf.coverageExcludes
+        let lineHits = coverageLineHits buildOutput.sources covMap contracts cfgWithAutoLink.campaignConf.coverageExcludes
         liftIO $ LBS.writeFile (dir </> "coverage_hits.json") (encode lineHits)
 
   -- save logical coverage report
-  when cfg.campaignConf.logicalCoverage $ do
-    let merged = mergeLogicalCoverage cfg.campaignConf.logicalCoverageMaxReasons (map (.logicalCoverage) campaignStates)
-    let outputDir = fromMaybe "." cfg.campaignConf.corpusDir
+  when cfgWithAutoLink.campaignConf.logicalCoverage $ do
+    let merged = mergeLogicalCoverage cfgWithAutoLink.campaignConf.logicalCoverageMaxReasons (map (.logicalCoverage) campaignStates)
+    let outputDir = fromMaybe "." cfgWithAutoLink.campaignConf.corpusDir
     liftIO $ createDirectoryIfMissing True outputDir
     liftIO $ LBS.writeFile (outputDir </> "logical_coverage.json") (logicalCoverageToJSON merged)
 
@@ -207,6 +209,8 @@ data Options = Options
   , cliDisableSlither   :: Bool
   , cliCryticArgs       :: Maybe String
   , cliSolcArgs         :: Maybe String
+  , cliAutoLinkLibraries :: Bool
+  , cliNoAutoLinkLibraries :: Bool
   , cliSymExec          :: Maybe Bool
   , cliSymExecTargets   :: [Text]
   , cliSymExecTimeout   :: Maybe Int
@@ -377,6 +381,10 @@ options = Options . NE.fromList
   <*> optional (option str $ long "solc-args"
     <> metavar "ARGS"
     <> help "Additional arguments to use in solc for the compilation of the contract to test.")
+  <*> switch (long "auto-link-libraries"
+    <> help "Automatically discover and inject Foundry library linking configuration.")
+  <*> switch (long "no-auto-link-libraries"
+    <> help "Disable automatic Foundry library linking.")
   <*> optional (option bool $ long "sym-exec"
     <> metavar "BOOL"
     <> help "Whether to enable the experimental symbolic execution feature.")
@@ -454,6 +462,11 @@ overrideConfig config Options{..} = do
       { disableSlither = cliDisableSlither || solConf.disableSlither
       , solcArgs = fromMaybe solConf.solcArgs cliSolcArgs
       , cryticArgs = maybe solConf.cryticArgs words cliCryticArgs
+      , autoLinkLibraries = if cliAutoLinkLibraries
+                              then True
+                              else if cliNoAutoLinkLibraries
+                                     then False
+                                     else solConf.autoLinkLibraries
       , sender = if null cliSender then solConf.sender else Set.fromList cliSender
       , deployer = fromMaybe solConf.deployer cliDeployer
       , contractAddr = fromMaybe solConf.contractAddr cliContractAddr

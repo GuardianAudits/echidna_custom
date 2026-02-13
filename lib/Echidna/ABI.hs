@@ -169,7 +169,7 @@ getRandomPow :: (MonadRandom m) => Int -> m Integer
 getRandomPow n = if n <= 0 then return 0 else
   do
    -- uniformly generate a number from 20 to n
-   mexp <- getRandomR (20, n)
+   mexp <- getRandomR (20, max 20 n)
    -- uniformly generate a number from the range 2 ^ (mexp / 2) to 2 ^ mexp
    getRandomR (2 ^ (mexp `div` 2), 2 ^ mexp)
 

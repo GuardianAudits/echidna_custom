@@ -42,6 +42,7 @@ import Echidna.Deploy (deployContracts, deployBytecodes)
 import Echidna.Exec (execTx, execTxWithCov, initialVM)
 import Echidna.SourceAnalysis.Slither
 import Echidna.Test (createTests, isAssertionMode, isPropertyMode, isDapptestMode)
+import Echidna.Solidity.LinkedLibraries (autoConfigureFoundryLibraries)
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config (EConfig(..), Env(..))
 import Echidna.Types.Signature
@@ -71,15 +72,17 @@ readSolcBatch d = do
 compileContracts
   :: SolConf
   -> NonEmpty FilePath
-  -> IO BuildOutput
+  -> IO (SolConf, BuildOutput)
 compileContracts solConf fp = do
+  cfg <- autoConfigureFoundryLibraries solConf (NE.head fp) >>= either (throwM . LibraryLinkingError) pure
+
   path <- findExecutable "crytic-compile" >>= \case
     Nothing -> throwM NoCryticCompile
     Just path -> pure path
 
   let
     usual = ["--solc-disable-warnings", "--export-format", "solc"]
-    solargs = solConf.solcArgs ++ linkLibraries solConf.solcLibs & (usual ++) .
+    solargs = cfg.solcArgs ++ linkLibraries cfg.solcLibs & (usual ++) .
               (\sa -> if null sa then [] else ["--solc-args", sa])
     compileOne :: FilePath -> IO BuildOutput
     compileOne x = do
@@ -88,7 +91,7 @@ compileContracts solConf fp = do
                    else pure Inherit
       (ec, out, err) <- measureIO solConf.quiet ("Compiling `" <> x <> "`") $ do
         readCreateProcessWithExitCode
-          (proc path $ (solConf.cryticArgs ++ solargs) |> x) {std_err = stderr} ""
+          (proc path $ (cfg.cryticArgs ++ solargs) |> x) {std_err = stderr} ""
       case ec of
         ExitSuccess -> mconcat <$> readSolcBatch "crytic-export"
         ExitFailure _ -> throwM $ CompileFailure out err
@@ -98,7 +101,8 @@ compileContracts solConf fp = do
     nullFilePath = if os == "mingw32" then "\\\\.\\NUL" else "/dev/null"
   -- clean up previous artifact files
   removeJsonFiles "crytic-export"
-  mconcat . NE.toList <$> mapM compileOne fp
+  output <- mconcat . NE.toList <$> mapM compileOne fp
+  pure (cfg, output)
 
 removeJsonFiles :: FilePath -> IO ()
 removeJsonFiles dir =

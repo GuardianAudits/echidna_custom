@@ -40,6 +40,8 @@ default-extensions:
 
 library:
   source-dirs: lib/
+  other-modules:
+    - Echidna.Solidity.LinkedLibraries
   dependencies:
     - ansi-terminal
     - array

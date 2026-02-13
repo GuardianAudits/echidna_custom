@@ -11,13 +11,14 @@ import Data.Map qualified as Map
 import Data.Text
 import Data.Text.Encoding (decodeUtf8)
 import Data.Vector.Unboxed qualified as VU
+import Data.Maybe (fromMaybe)
 import Numeric (showHex)
 
 import EVM.Dapp (DappInfo)
 
 import Echidna.ABI (ppAbiValue, GenDict(..))
 import Echidna.Events (Events, extractEvents)
-import Echidna.Types.Campaign (WorkerState(..))
+import Echidna.Types.Campaign (CampaignConf(..), WorkerState(..))
 import Echidna.Types.Config (Env(..))
 import Echidna.Types.Coverage (CoverageInfo, mergeCoverageMaps)
 import Echidna.Types.Test (EchidnaTest(..))
@@ -29,6 +30,8 @@ data Campaign = Campaign
   , _error :: Maybe String
   , _tests :: [Test]
   , seed :: Int
+  , workerSeeds :: [WorkerSeed]
+  , seedDerivation :: Text
   , coverage :: Map String [CoverageInfo]
   }
 
@@ -38,7 +41,20 @@ instance ToJSON Campaign where
     , "error" .= _error
     , "tests" .= _tests
     , "seed" .= seed
+    , "workerSeeds" .= workerSeeds
+    , "seedDerivation" .= seedDerivation
     , "coverage" .= coverage
+    ]
+
+data WorkerSeed = WorkerSeed
+  { workerId :: Int
+  , workerSeed :: Int
+  }
+
+instance ToJSON WorkerSeed where
+  toJSON WorkerSeed{..} = object
+    [ "workerId" .= workerId
+    , "seed" .= workerSeed
     ]
 
 data Test = Test
@@ -102,15 +118,18 @@ encodeCampaign :: Env -> [WorkerState] -> IO L.ByteString
 encodeCampaign env workerStates = do
   tests <- traverse readIORef env.testRefs
   frozenCov <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
-  -- TODO: this is ugly, refactor seed to live in Env
-  let workerSeed [] = 0
-      workerSeed (state:_) = state.genDict.defSeed
-  let seed = workerSeed workerStates
+  let CampaignConf{seed = campaignSeed} = env.cfg.campaignConf
+  let baseSeed = fromMaybe (case workerStates of
+                    [] -> 0
+                    s:_ -> s.genDict.defSeed - s.workerId) campaignSeed
+      workerSeeds = fmap (\state -> WorkerSeed state.workerId state.genDict.defSeed) workerStates
   pure $ encode Campaign
     { _success = True
     , _error = Nothing
     , _tests = mapTest env.dapp <$> tests
-    , seed = seed
+    , seed = baseSeed
+    , workerSeeds = workerSeeds
+    , seedDerivation = pack "base_plus_worker_id"
     , coverage = Map.mapKeys (("0x" ++) . (`showHex` "")) $ VU.toList <$> frozenCov
     }
 

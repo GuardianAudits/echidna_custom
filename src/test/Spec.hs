@@ -10,6 +10,7 @@ import Tests.Dapptest (dapptestTests)
 import Tests.Encoding (encodingJSONTests)
 import Tests.FoundryTestGen (foundryTestGenTests)
 import Tests.Integration (integrationTests)
+import Tests.LinkedLibraries (linkedLibrariesTests)
 import Tests.Optimization (optimizationTests)
 import Tests.Overflow (overflowTests)
 import Tests.PeriodicSave (periodicSaveTests)
@@ -36,6 +37,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , dapptestTests
            , encodingJSONTests
            , foundryTestGenTests
+           , linkedLibrariesTests
            , cheatTests
            , symbolicTests
            , periodicSaveTests

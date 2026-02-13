@@ -61,6 +61,10 @@ computeCampaignFingerprint Env{cfg, dapp, chainId} selectedContract =
               [ "contractAddr" .= showAddr solConf.contractAddr
               , "deployer" .= showAddr solConf.deployer
               , "solcLibs" .= solConf.solcLibs
+              , "autoLinkLibraries" .= solConf.autoLinkLibraries
+              , "autoLinkLibrariesStart" .= showAddr solConf.autoLinkLibrariesStart
+              , "autoLinkLibrariesMax" .= solConf.autoLinkLibrariesMax
+              , "autoLinkLibrariesOutDir" .= solConf.autoLinkLibrariesOutDir
               , "deployContracts" .= fmap (\(a, s) -> object ["addr" .= showAddr a, "contract" .= s]) solConf.deployContracts
               , "deployBytecodes" .= fmap (\(a, t) -> object ["addr" .= showAddr a, "bytecode" .= t]) solConf.deployBytecodes
               , "allContracts" .= solConf.allContracts

@@ -93,9 +93,10 @@ withSolcVersion (Just f) t = do
 runContract :: FilePath -> Maybe ContractName -> EConfig -> WorkerType -> IO (Env, WorkerState)
 runContract f selectedContract cfg workerType = do
   seed <- maybe (getRandomR (0, maxBound)) pure cfg.campaignConf.seed
-  buildOutput <- compileContracts cfg.solConf (f :| [])
+  (resolvedSolConf, buildOutput) <- compileContracts cfg.solConf (f :| [])
+  let cfg' = cfg { solConf = resolvedSolConf }
 
-  (vm, env, dict) <- prepareContract cfg (f :| []) buildOutput selectedContract seed
+  (vm, env, dict) <- prepareContract cfg' (f :| []) buildOutput selectedContract seed
 
   (_stopReason, finalState) <- flip runReaderT env $
     runWorker workerType (pure ()) vm dict 0 [] cfg.campaignConf.testLimit selectedContract
@@ -165,8 +166,8 @@ loadSolTests cfg buildOutput name = do
 checkConstructorConditions :: FilePath -> String -> TestTree
 checkConstructorConditions fp as = testCase fp $ do
   let cfg = testConfig
-  buildOutput <- compileContracts cfg.solConf (pure fp)
-  (v, env, t) <- loadSolTests cfg buildOutput Nothing
+  (resolvedSolConf, buildOutput) <- compileContracts cfg.solConf (pure fp)
+  (v, env, t) <- loadSolTests (cfg { solConf = resolvedSolConf }) buildOutput Nothing
   r <- flip runReaderT env $ mapM (`checkETest` v) t
   mapM_ (\(x,_) -> assertBool as (forceBool x)) r
   where forceBool (BoolValue b) = b

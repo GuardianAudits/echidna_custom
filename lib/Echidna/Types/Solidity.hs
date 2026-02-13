@@ -33,6 +33,7 @@ data SolException
   | SetUpCallFailed
   | NoCryticCompile
   | InvalidMethodFilters Filter
+  | LibraryLinkingError String
   | OutdatedSolcVersion Version
 
 instance Show SolException where
@@ -52,6 +53,7 @@ instance Show SolException where
     InvalidMethodFilters f -> "Applying the filter " ++ show f ++ " to the methods produces an empty list. Are you filtering the correct functions using `filterFunctions` or fuzzing the correct contract?"
     SetUpCallFailed        -> "Calling the setUp() function failed (revert, out-of-gas, sending ether to a non-payable constructor, etc.)"
     DeploymentFailed a t   -> "Deploying the contract " ++ show a ++ " failed (revert, out-of-gas, sending ether to a non-payable constructor, etc.):\n" ++ unpack t
+    LibraryLinkingError e -> "Failed to auto-configure linked libraries: " ++ e
     OutdatedSolcVersion v  -> "Solc version " ++ toString v ++ " detected. Echidna doesn't support versions of solc before " ++ toString minSupportedSolcVersion ++ ". Please use a newer version."
 
 
@@ -70,6 +72,10 @@ data SolConf = SolConf
   , cryticArgs      :: [String]         -- ^ Args to pass to crytic
   , solcArgs        :: String           -- ^ Args to pass to @solc@
   , solcLibs        :: [String]         -- ^ List of libraries to load, in order.
+  , autoLinkLibraries :: Bool            -- ^ Automatically detect and link Foundry libraries
+  , autoLinkLibrariesStart :: Addr       -- ^ Address to start assigning auto-linked libraries
+  , autoLinkLibrariesMax :: Int          -- ^ Maximum number of auto-linked libraries
+  , autoLinkLibrariesOutDir :: Maybe FilePath -- ^ Foundry output directory (defaults from foundry.toml or "out")
   , quiet           :: Bool             -- ^ Suppress @solc@ output, errors, and warnings
   , deployContracts :: [(Addr, String)] -- ^ List of contracts to deploy in specific addresses
   , deployBytecodes :: [(Addr, Text)]   -- ^ List of contracts to deploy in specific addresses
