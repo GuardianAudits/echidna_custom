@@ -4,12 +4,22 @@ pragma solidity ^0.8.13;
 // Smoke tests for Foundry-compatible cheatcodes implemented in this custom
 // Echidna/HEVM branch:
 // - deal(address token, address to, uint256 give[, bool adjustTotalSupply])
+// - readFile(string)
+// - parseJsonBytes(string,string)
+// - getCode(string)
+// - snapshot()
+// - revertTo(uint256)
 // - record()
 // - accesses(address)
 
 interface Vm {
     function deal(address token, address to, uint256 give) external;
     function deal(address token, address to, uint256 give, bool adjustTotalSupply) external;
+    function readFile(string calldata path) external returns (string memory contents);
+    function parseJsonBytes(string calldata json, string calldata keyPath) external returns (bytes memory out);
+    function getCode(string calldata artifactPath) external returns (bytes memory creationBytecode);
+    function snapshot() external returns (uint256 id);
+    function revertTo(uint256 id) external returns (bool success);
     function record() external;
     function accesses(address target) external returns (bytes32[] memory reads, bytes32[] memory writes);
 }
@@ -106,6 +116,48 @@ contract CheatcodesSmoke {
         return _contains(reads, expected) && _contains(writes, expected);
     }
 
+    // ------------------------------------------------------------------------
+    // snapshot / revertTo
+    // ------------------------------------------------------------------------
+
+    function echidna_snapshot_and_revert() public returns (bool) {
+        token.setBalance(USER, 100);
+        uint256 snap = vm.snapshot();
+        token.setBalance(USER, 999);
+
+        if (!vm.revertTo(snap)) return false;
+        return token.balanceOf(USER) == 100;
+    }
+
+    function echidna_revert_unknown_id_fails() public returns (bool) {
+        uint256 snap = vm.snapshot();
+        return !vm.revertTo(snap + 1);
+    }
+
+    // ------------------------------------------------------------------------
+    // readFile / parseJsonBytes / getCode
+    // ------------------------------------------------------------------------
+
+    function echidna_read_file() public returns (bool) {
+        string memory text = vm.readFile("contracts/bench/fixtures/read_file_payload.json");
+        return keccak256(bytes(text)) == keccak256(bytes("{\"message\":\"cheatcode-fixtures\"}"));
+    }
+
+    function echidna_parse_json_bytes() public returns (bool) {
+        string memory json = "{\"a\":{\"bytes\":\"0x68656c6c6f\",\"nums\":[1,2,3]}}";
+        bytes memory fromHex = vm.parseJsonBytes(json, ".a.bytes");
+        bytes memory fromArray = vm.parseJsonBytes(json, ".a.nums");
+
+        if (keccak256(fromHex) != keccak256(bytes("hello"))) return false;
+        if (fromArray.length != 3) return false;
+        return fromArray[0] == 0x01 && fromArray[1] == 0x02 && fromArray[2] == 0x03;
+    }
+
+    function echidna_get_code() public returns (bool) {
+        bytes memory code = vm.getCode("contracts/bench/getcode_artifacts/GetCodeWidget.0.8.18.json");
+        return keccak256(code) == keccak256(hex"60016000556002600055");
+    }
+
     function _contains(bytes32[] memory arr, bytes32 x) internal pure returns (bool) {
         for (uint256 i = 0; i < arr.length; i++) {
             if (arr[i] == x) return true;
@@ -113,4 +165,3 @@ contract CheatcodesSmoke {
         return false;
     }
 }
-

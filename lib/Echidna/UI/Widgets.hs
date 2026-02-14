@@ -19,9 +19,7 @@ import Data.String.AnsiEscapeCodes.Strip.Text (stripAnsiEscapeCodes)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (LocalTime, NominalDiffTime, formatTime, defaultTimeLocale, diffLocalTime)
-import Data.Version (showVersion)
 import Graphics.Vty qualified as V
-import Paths_echidna qualified (version)
 import Text.Printf (printf)
 import Text.Wrap
 
@@ -144,7 +142,7 @@ campaignStatus uiState = do
           Nothing -> ""
     in str "[ " <+>
        withAttr (attrName "title")
-         (str $ "Echidna " <> showVersion Paths_echidna.version <> projectTitle) <+>
+         (str $ "Echidna" <> projectTitle) <+>
        str " ]"
   finalStatus s = hBorder <=> hCenter (bold $ str s)
   testsTitle =

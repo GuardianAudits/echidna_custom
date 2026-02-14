@@ -41,7 +41,7 @@ import Data.Aeson
   )
 import Data.Aeson.Types (parseEither)
 import Data.Aeson.Key (fromText)
-import Data.ByteString qualified as BS
+import Crypto.Hash (Digest, SHA256, hashlazy)
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
 import Data.ByteString.Lazy.Char8 qualified as LBS8
@@ -76,7 +76,6 @@ import Network.WebSockets
   , sendTextData
   )
 
-import Echidna.CorpusSync.Hash (entryIdForTxs)
 import Echidna.CorpusSync.Protocol
   ( Envelope(..)
   , decodeEnvelope
@@ -84,6 +83,13 @@ import Echidna.CorpusSync.Protocol
   , EntryMeta(..)
   , EntryType(..)
   )
+import Echidna.Types.Tx (Tx)
+
+entryIdForTxs :: [Tx] -> Text
+entryIdForTxs txs = sha256Hex (encode txs)
+  where
+    sha256Hex :: LBS.ByteString -> Text
+    sha256Hex bs = T.pack $ show (hashlazy bs :: Digest SHA256)
 
 data LogFormat = LogText | LogJson deriving (Show, Eq)
 

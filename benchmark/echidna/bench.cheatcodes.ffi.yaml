@@ -1,0 +1,19 @@
+testMode: "property"
+format: "none"
+quiet: true
+
+workers: 1
+seqLen: 1
+testLimit: 500
+shrinkLimit: 0
+stopOnFail: true
+
+allowFFI: true
+
+# Keep coverage off for microbenchmarks; the goal is to measure cheatcode
+# overhead rather than coverage bookkeeping.
+coverage: false
+logicalCoverage: false
+
+corpusDir: "out/bench_cheatcodes/corpus"
+coverageDir: "out/bench_cheatcodes/coverage"

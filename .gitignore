@@ -22,3 +22,19 @@ crytic-export/
 echidna.cabal
 *.swp
 profiles/
+
+# macOS
+.DS_Store
+
+# Local benchmark outputs (generated run artifacts)
+benchmark/out/
+
+# Local portable build artifacts (generated binaries/tarballs)
+portable/
+
+# Crytic-compile scratch output
+_crytic_missing_source.sol
+
+# Local backup artifacts
+echidna.cabal.before
+*.cabal.before

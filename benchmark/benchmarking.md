@@ -213,3 +213,18 @@ REPEATS=5 NODES=3 TOTAL_WORKERS=3 HUB_PORT=9020 ./benchmark/scripts/bench_corpus
 LATEST=$(ls -td benchmark/out/bench_corpus_3v1_* | head -n1)
 cat "$LATEST/summary.json"
 ```
+
+## Cheatcode smoke + microbenchmark suite
+
+The cheatcode suite runs only property smoke checks and per-cheatcode microbenchmarks (no distributed corpus benchmark):
+
+```bash
+cd /Users/robert/Documents/audits/others/echidna_hevm_custom/echidna
+ECHIDNA_BIN="$(realpath result/bin/echidna)"
+./benchmark/scripts/run_cheatcodes_suite.sh "${ECHIDNA_BIN}" \
+  --repeats 5 \
+  --workers 1 \
+  --seq-len 1 \
+  --test-limit 500 \
+  --smoke-test-limit 50
+```

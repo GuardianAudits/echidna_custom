@@ -5,15 +5,12 @@ module Echidna.CorpusSync.Hash
   ) where
 
 import Crypto.Hash (Digest, SHA256, hashlazy)
-import Data.Aeson (Value(..), encode, object, (.=))
+import Data.Aeson (Value, encode, object, (.=))
 import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Version (showVersion)
-import Paths_echidna (version)
-
 import EVM.Dapp (DappInfo(..))
 import EVM.Solidity (SolcContract(..))
 import EVM.Types (Addr, W256)
@@ -32,9 +29,6 @@ entryIdForTxs txs = sha256Hex (encode txs)
 
 -- | Compute a campaign fingerprint used to prevent mixing corpuses across
 -- incompatible builds/configs.
---
--- This intentionally only includes fields that affect replay validity and
--- coverage semantics. It is not intended to be a full reproducibility hash.
 computeCampaignFingerprint :: Env -> Maybe Text -> Text
 computeCampaignFingerprint Env{cfg, dapp, chainId} selectedContract =
   sha256Hex $ encode descriptor
@@ -53,8 +47,7 @@ computeCampaignFingerprint Env{cfg, dapp, chainId} selectedContract =
     descriptor :: Value
     descriptor =
       object
-        [ "echidna_version" .= showVersion version
-        , "selected_contract" .= selectedContract
+        [ "selected_contract" .= selectedContract
         , "contracts" .= fmap (\(name, h) -> object ["name" .= name, "runtimeCodehash" .= showW256 h]) contractsList
         , "deployment"
             .= object

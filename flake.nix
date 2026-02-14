@@ -116,38 +116,45 @@
         # on macos this has everything except libcxx and libsystem
         # statically linked. we can be confident that these two will always
         # be provided in a well known location by macos itself.
-        echidnaRedistributable = let
-          grep = "${pkgs.gnugrep}/bin/grep";
-          otool = "${pkgs.darwin.binutils.bintools}/bin/otool";
-          install_name_tool = "${pkgs.darwin.binutils.bintools}/bin/install_name_tool";
-          codesign_allocate = "${pkgs.darwin.binutils.bintools}/bin/codesign_allocate";
-          codesign = "${pkgs.darwin.sigtool}/bin/codesign";
-        in if pkgs.stdenv.isDarwin
-        then pkgs.runCommand "echidna-stripNixRefs" {} ''
-          mkdir -p $out/bin
-          cp ${pkgs.haskell.lib.dontCheck echidna-static}/bin/echidna $out/bin/
-          # rewrite /nix/... library paths to point to /usr/lib
-          exe="$out/bin/echidna"
-          chmod 777 "$exe"
-          for lib in $(${otool} -L "$exe" | awk '/nix\/store/{ print $1 }'); do
-            case "$lib" in
-              *libc++.*.dylib)    ${install_name_tool} -change "$lib" /usr/lib/libc++.dylib     "$exe" ;;
-              *libc++abi.*.dylib) ${install_name_tool} -change "$lib" /usr/lib/libc++abi.dylib  "$exe" ;;
-              *libffi.*.dylib)    ${install_name_tool} -change "$lib" /usr/lib/libffi.dylib     "$exe" ;;
-              *libiconv.2.dylib)  ${install_name_tool} -change "$lib" /usr/lib/libiconv.2.dylib "$exe" ;;
-              *libz.dylib)        ${install_name_tool} -change "$lib" /usr/lib/libz.dylib       "$exe" ;;
-            esac
-          done
-          # check that no nix deps remain
-          nixdeps=$(${otool} -L "$exe" | tail -n +2 | { ${grep} /nix/store -c || test $? = 1; })
-          if [ ! "$nixdeps" = "0" ]; then
-            echo "Nix deps remain in redistributable binary!"
-            exit 255
-          fi
-          # re-sign binary
-          CODESIGN_ALLOCATE=${codesign_allocate} ${codesign} -f -s - "$exe"
-          chmod 555 "$exe"
-        '' else echidna-static;
+        darwinRewriteRedistributable = exeName:
+          let
+            grep = "${pkgs.gnugrep}/bin/grep";
+            otool = "${pkgs.darwin.binutils.bintools}/bin/otool";
+            install_name_tool = "${pkgs.darwin.binutils.bintools}/bin/install_name_tool";
+            codesign_allocate = "${pkgs.darwin.binutils.bintools}/bin/codesign_allocate";
+            codesign = "${pkgs.darwin.sigtool}/bin/codesign";
+          in
+            pkgs.runCommand "echidna-${exeName}-stripNixRefs" {} ''
+              mkdir -p $out/bin
+              cp ${pkgs.haskell.lib.dontCheck echidna-static}/bin/${exeName} $out/bin/
+              exe="$out/bin/${exeName}"
+              chmod 777 "$exe"
+              # rewrite /nix/... library paths to point to /usr/lib
+              for lib in $(${otool} -L "$exe" | awk '/nix\/store/{ print $1 }'); do
+                case "$lib" in
+                  *libc++.*.dylib)    ${install_name_tool} -change "$lib" /usr/lib/libc++.dylib     "$exe" ;;
+                  *libc++abi.*.dylib) ${install_name_tool} -change "$lib" /usr/lib/libc++abi.dylib  "$exe" ;;
+                  *libffi.*.dylib)    ${install_name_tool} -change "$lib" /usr/lib/libffi.dylib     "$exe" ;;
+                  *libiconv.2.dylib)  ${install_name_tool} -change "$lib" /usr/lib/libiconv.2.dylib "$exe" ;;
+                  *libz.dylib)        ${install_name_tool} -change "$lib" /usr/lib/libz.dylib       "$exe" ;;
+                esac
+              done
+              # check that no nix deps remain
+              nixdeps=$(${otool} -L "$exe" | tail -n +2 | { ${grep} /nix/store -c || test $? = 1; })
+              if [ ! "$nixdeps" = "0" ]; then
+                echo "Nix deps remain in redistributable binary!"
+                exit 255
+              fi
+              # re-sign binary
+              CODESIGN_ALLOCATE=${codesign_allocate} ${codesign} -f -s - "$exe"
+              chmod 555 "$exe"
+            '';
+        echidnaRedistributable = if pkgs.stdenv.isDarwin
+          then darwinRewriteRedistributable "echidna"
+          else echidna-static;
+        echidnaCorpusHubRedistributable = if pkgs.stdenv.isDarwin
+          then darwinRewriteRedistributable "echidna-corpus-hub"
+          else echidna-static;
 
         # if we pass a library folder to ghc via --extra-lib-dirs that contains
         # only .a files, then ghc will link that library statically instead of
@@ -165,6 +172,7 @@
         packages.default = echidna pkgs;
 
         packages.echidna-redistributable = echidnaRedistributable;
+        packages.echidna-corpus-hub-redistributable = echidnaCorpusHubRedistributable;
 
         devShells = with pkgs; {
           default = haskellPackages.shellFor {

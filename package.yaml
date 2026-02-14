@@ -28,6 +28,11 @@ dependencies:
 
 language: GHC2021
 
+when:
+  - condition: os(darwin)
+    ghc-options:
+      - -fPIC
+
 default-extensions:
   - DataKinds
   - DuplicateRecordFields
@@ -42,6 +47,7 @@ library:
   source-dirs: lib/
   other-modules:
     - Echidna.Solidity.LinkedLibraries
+    - Paths_echidna
   dependencies:
     - ansi-terminal
     - array
@@ -119,8 +125,10 @@ executables:
           - -O2
           - -optl-pthread
       - condition: os(darwin)
-        ld-options: -Wl,-keep_dwarf_unwind
-        ghc-options: -fcompact-unwind
+        ld-options:
+          - -Wl,-keep_dwarf_unwind
+        ghc-options:
+          - -fcompact-unwind
 
   echidna-corpus-hub:
     main: Main.hs
@@ -129,6 +137,7 @@ executables:
       - echidna
       - aeson
       - bytestring
+      - cryptonite
       - containers
       - directory
       - filepath
@@ -142,6 +151,19 @@ executables:
       - -rtsopts
       - '"-with-rtsopts=-N"'
       - -Wno-unused-packages
+    when:
+      - condition: (os(linux) || os(windows)) && flag(static)
+        ghc-options:
+          - -optl-static
+      - condition: os(linux) || os(windows)
+        ghc-options:
+          - -O2
+          - -optl-pthread
+      - condition: os(darwin)
+        ld-options:
+          - -Wl,-keep_dwarf_unwind
+        ghc-options:
+          - -fcompact-unwind
 
 tests:
   echidna-testsuite:
@@ -160,16 +182,18 @@ tests:
       - tasty-quickcheck
       - yaml
     when:
-        - condition: (os(linux) || os(windows)) && flag(static)
-          ghc-options:
-            - -optl-static
-        - condition: os(linux) || os(windows)
-          ghc-options:
-            - -O2
-            - -optl-pthread
-        - condition: os(darwin)
-          ld-options: -Wl,-keep_dwarf_unwind
-          ghc-options: -fcompact-unwind
+      - condition: (os(linux) || os(windows)) && flag(static)
+        ghc-options:
+          - -optl-static
+      - condition: os(linux) || os(windows)
+        ghc-options:
+          - -O2
+          - -optl-pthread
+      - condition: os(darwin)
+        ld-options:
+          - -Wl,-keep_dwarf_unwind
+        ghc-options:
+          - -fcompact-unwind
 
 flags:
   static:

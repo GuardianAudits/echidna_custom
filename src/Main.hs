@@ -146,7 +146,7 @@ main = withUtf8 $ withCP65001 $ do
       let contracts = Map.elems env.dapp.solcByName
       saveCoverages env runId dir buildOutput.sources contracts
 
-  when cfgWithAutoLink.campaignConf.coverageLineHits $ do
+      when cfgWithAutoLink.campaignConf.coverageLineHits $ do
         covMap <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
         let lineHits = coverageLineHits buildOutput.sources covMap contracts cfgWithAutoLink.campaignConf.coverageExcludes
         liftIO $ LBS.writeFile (dir </> "coverage_hits.json") (encode lineHits)

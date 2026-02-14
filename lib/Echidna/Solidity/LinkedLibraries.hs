@@ -3,7 +3,7 @@
 module Echidna.Solidity.LinkedLibraries where
 
 import Control.Applicative ((<|>))
-import Control.Monad (forM, unless)
+import Control.Monad (unless)
 import Data.Aeson (Object, Value(..), eitherDecodeStrict')
 import Data.Aeson.Key (Key)
 import Data.Aeson.Key qualified as AesonKey
@@ -123,7 +123,7 @@ collectArtifactJsons root = do
     go :: FilePath -> IO [FilePath]
     go dir = do
       entries <- listDirectory dir
-      concat <$> forM entries $ \entry -> do
+      concat <$> mapM (\entry -> do
         let fp = dir </> entry
         isDir <- doesDirectoryExist fp
         isFile <- doesFileExist fp
@@ -132,6 +132,7 @@ collectArtifactJsons root = do
           else if isFile && isJson fp && not (isMetadataJson fp)
             then pure [fp]
             else pure []
+        ) entries
 
 -- | Scan artifacts for contract-level link references and all unique library keys.
 scanArtifactsForLinkReferences :: [FilePath] -> IO (Map Text (Set Text), Set Text)
@@ -152,6 +153,36 @@ parseFoundryArtifact fp = do
             deps = extractLinkReferences obj
         pure $ Just (name, deps)
       _ -> pure Nothing
+
+extractLinkReferences :: Object -> Set Text
+extractLinkReferences obj =
+  Set.union (extractLinksFromSection (lookupSection "bytecode")) (extractLinksFromSection (lookupSection "deployedBytecode"))
+  where
+    lookupSection :: Text -> Object
+    lookupSection k = case KeyMap.lookup (AesonKey.fromText k) obj of
+      Just (Object o) -> o
+      _ -> mempty
+
+    extractLinksFromSection :: Object -> Set Text
+    extractLinksFromSection section = case KeyMap.lookup "linkReferences" section of
+      Just (Object links) ->
+        Set.fromList . catMaybes . concatMap extractSourceLinks . KeyMap.toList $ links
+      _ -> mempty
+
+    extractSourceLinks :: (Key, Value) -> [Maybe Text]
+    extractSourceLinks (sourceKey, Object libs) =
+      let source = AesonKey.toText sourceKey
+      in if T.null (T.strip source)
+        then []
+        else [formatKey source libName | libName <- KeyMap.keys libs]
+    extractSourceLinks _ = []
+
+    formatKey :: Text -> Key -> Maybe Text
+    formatKey source libKey =
+      let lib = AesonKey.toText libKey
+      in if T.null (T.strip lib)
+        then Nothing
+        else Just (source <> ":" <> lib)
 
 parseContractName :: FilePath -> Object -> Text
 parseContractName fp obj =
@@ -179,10 +210,10 @@ buildLibraryInfoOrder contractDeps libraryKeys = do
     Left $ "found duplicate library names for different sources: " ++ show (map fst duplicateNames)
 
   let libraryInfoByKey = Map.fromList
-        [ (lliKey, mkLibraryInfo (T.unpack source) name lliKey)
+        [ (lliKey, mkLibraryInfo source name lliKey)
         | (source, name, lliKey) <- parsed
         ]
-      depsByKey = Map.map lliDependencies libraryInfoByKey
+      depsByKey = Map.map libraryInfoDependencies libraryInfoByKey
       order = topologicalSort depsByKey
   pure $ map (libraryInfoByKey Map.!) order
   where
@@ -197,7 +228,7 @@ buildLibraryInfoOrder contractDeps libraryKeys = do
     mkLibraryInfo :: Text -> Text -> Text -> LibraryLinkInfo
     mkLibraryInfo source name key =
       let deps = Set.delete key (Map.findWithDefault mempty name contractDeps `Set.intersection` libraryKeys)
-      in LibraryLinkInfo
+        in LibraryLinkInfo
            { lliName = name
            , lliSourceFile = T.unpack source
            , lliKey = key
@@ -281,20 +312,26 @@ autoConfigureFoundryLibraries solConf cliFilePath = do
           if Set.null libraryKeys
             then pure (Right solConf)
             else do
-              libraryInfos <- buildLibraryInfoOrder contractDeps libraryKeys
-              assigned <- assignLibraryAddresses
-                solConf.autoLinkLibrariesStart
-                solConf.autoLinkLibrariesMax
-                (Set.fromList (fst <$> solConf.deployContracts))
-                libraryInfos
-              let deploys = [ (addr, lliSourceFile info ++ ":" ++ T.unpack (lliName info))
-                            | (info, addr) <- assigned ]
-                  libArg = formatCompileLibrariesArg [(lliName info, addr) | (info, addr) <- assigned]
-                  autoConf = solConf
-                    { cryticArgs = solConf.cryticArgs ++ [libArg]
-                    , deployContracts = deploys ++ solConf.deployContracts
-                    }
-              pure (Right autoConf)
+              case buildLibraryInfoOrder contractDeps libraryKeys of
+                Left err -> pure (Left err)
+                Right libraryInfos ->
+                  case assignLibraryAddresses
+                    solConf.autoLinkLibrariesStart
+                    solConf.autoLinkLibrariesMax
+                    (Set.fromList (fst <$> solConf.deployContracts))
+                    libraryInfos of
+                    Left err -> pure (Left err)
+                    Right assigned -> do
+                      let deploys =
+                            [ (addr, source ++ ":" ++ T.unpack name)
+                            | (LibraryLinkInfo name source _ _, addr) <- assigned
+                            ]
+                          libArg = formatCompileLibrariesArg [(name, addr) | (LibraryLinkInfo name _ _ _, addr) <- assigned]
+                          autoConf = solConf
+                            { cryticArgs = solConf.cryticArgs ++ [libArg]
+                            , deployContracts = deploys ++ solConf.deployContracts
+                            }
+                      pure (Right autoConf)
   where
     autoLinkEnabled :: SolConf -> Bool
     autoLinkEnabled conf =
@@ -322,32 +359,6 @@ autoConfigureFoundryLibraries solConf cliFilePath = do
               hPutStrLn stderr err
               pure False
 
-    extractLinkReferences :: Object -> Set Text
-    extractLinkReferences obj =
-      Set.union (extractLinksFromSection (lookupSection "bytecode")) (extractLinksFromSection (lookupSection "deployedBytecode"))
-      where
-        lookupSection :: Text -> Object
-        lookupSection k = case KeyMap.lookup (AesonKey.fromText k) obj of
-          Just (Object o) -> o
-          _ -> mempty
-
-        extractLinksFromSection :: Object -> Set Text
-        extractLinksFromSection section = case KeyMap.lookup "linkReferences" section of
-          Just (Object links) ->
-            Set.fromList . catMaybes . concatMap extractSourceLinks . KeyMap.toList $ links
-          _ -> mempty
-
-        extractSourceLinks :: (Key, Value) -> [Maybe Text]
-        extractSourceLinks (sourceKey, Object libs) =
-          let source = AesonKey.toText sourceKey
-          in if T.null (T.strip source)
-            then []
-            else [formatKey source libName | libName <- KeyMap.keys libs]
-        extractSourceLinks _ = []
-
-        formatKey :: Text -> Key -> Maybe Text
-        formatKey source libKey =
-          let lib = AesonKey.toText libKey
-          in if T.null (T.strip lib)
-            then Nothing
-            else Just (source <> ":" <> lib)
+libraryInfoDependencies :: LibraryLinkInfo -> Set Text
+libraryInfoDependencies = \case
+  LibraryLinkInfo _ _ _ deps -> deps
