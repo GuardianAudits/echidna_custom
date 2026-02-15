@@ -185,6 +185,13 @@ data Options = Options
   , cliMcpMaxEvents    :: Maybe Int
   , cliMcpMaxReverts   :: Maybe Int
   , cliMcpMaxTxs       :: Maybe Int
+  , cliMcpMaxReproducerArtifacts :: Maybe Int
+  , cliMcpReproducerArtifactsLimit :: Maybe Int
+  , cliMcpMaxReproducerTxs      :: Maybe Int
+  , cliMcpReproducerEventsLimit :: Maybe Int
+  , cliMcpReproducerResultTTLMinutes :: Maybe Int
+  , cliMcpIncludeCallData :: Maybe Bool
+  , cliMcpMaxReproducerJsonBytes :: Maybe Int
   , cliCorpusSyncEnabled :: Maybe Bool
   , cliCorpusSyncUrl :: Maybe Text
   , cliCorpusSyncToken :: Maybe Text
@@ -312,7 +319,28 @@ options = Options . NE.fromList
   <*> optional (option auto $ long "mcp-max-txs"
     <> metavar "N"
     <> help "MCP ring buffer size for transactions.")
-  <*> optional (option bool $ long "corpus-sync"
+    <*> optional (option auto $ long "mcp-max-reproducer-artifacts"
+    <> metavar "N"
+    <> help "MCP maximum reproducer artifacts to retain for MCP lookup.")
+    <*> optional (option auto $ long "mcp-reproducer-artifacts-limit"
+    <> metavar "N"
+    <> help "Alias for mcp-max-reproducer-artifacts.")
+    <*> optional (option auto $ long "mcp-max-reproducer-txs"
+    <> metavar "N"
+    <> help "Maximum number of transactions returned per reproducer in MCP responses.")
+    <*> optional (option auto $ long "mcp-reproducer-events-limit"
+    <> metavar "N"
+    <> help "MCP reproducer event ring buffer size.")
+    <*> optional (option auto $ long "mcp-reproducer-result-ttl-minutes"
+    <> metavar "N"
+    <> help "TTL (minutes) for MCP reproducer artifacts.")
+    <*> optional (option bool $ long "mcp-include-call-data"
+    <> metavar "BOOL"
+    <> help "Include raw call data in MCP reproducer payloads (default: false).")
+    <*> optional (option auto $ long "mcp-max-reproducer-json-bytes"
+    <> metavar "N"
+    <> help "Max JSON bytes for MCP reproducer responses.")
+    <*> optional (option bool $ long "corpus-sync"
     <> metavar "BOOL"
     <> help "Enable distributed corpus sync over WebSockets (default: false).")
   <*> optional (option (T.pack <$> str) $ long "corpus-sync-url"
@@ -483,6 +511,14 @@ overrideConfig config Options{..} = do
       , maxEvents = fromMaybe mcpConf.maxEvents cliMcpMaxEvents
       , maxReverts = fromMaybe mcpConf.maxReverts cliMcpMaxReverts
       , maxTxs = fromMaybe mcpConf.maxTxs cliMcpMaxTxs
+      , maxReproducerArtifacts = fromMaybe
+          (fromMaybe mcpConf.maxReproducerArtifacts cliMcpMaxReproducerArtifacts)
+          (cliMcpReproducerArtifactsLimit <|> cliMcpMaxReproducerArtifacts)
+      , maxReproducerTxs = fromMaybe mcpConf.maxReproducerTxs cliMcpMaxReproducerTxs
+      , reproducerEventsLimit = fromMaybe mcpConf.reproducerEventsLimit cliMcpReproducerEventsLimit
+      , reproducerResultTTLMinutes = fromMaybe mcpConf.reproducerResultTTLMinutes cliMcpReproducerResultTTLMinutes
+      , includeCallData = fromMaybe mcpConf.includeCallData cliMcpIncludeCallData
+      , maxReproducerJsonBytes = fromMaybe mcpConf.maxReproducerJsonBytes cliMcpMaxReproducerJsonBytes
       }
 
     overrideCorpusSyncConf csConf =

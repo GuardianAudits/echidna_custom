@@ -38,7 +38,7 @@ import Echidna.ABI
 import Echidna.Events (extractEventValues)
 import Echidna.Exec
 import Echidna.LogicalCoverage (emptyLogicalCoverage, updateLogicalCoverage)
-import Echidna.MCP (recordTx, recordLogicalCoverage, mcpCheckpoint)
+import Echidna.MCP (recordTx, recordLogicalCoverage, mcpCheckpoint, recordTestState)
 import Echidna.Mutator.Corpus
 import Echidna.Shrink (shrinkTest)
 import Echidna.Solidity (chooseContract)
@@ -646,10 +646,13 @@ updateTests
   -> m ()
 updateTests f = do
   testRefs <- asks (.testRefs)
-  forM_ testRefs $ \testRef -> do
+  env <- ask
+  forM_ (zip [0..] testRefs) $ \(idx, testRef) -> do
     test <- liftIO $ readIORef testRef
     f test >>= \case
-      Just test' -> liftIO $ writeIORef testRef test'
+      Just test' -> do
+        liftIO $ writeIORef testRef test'
+        forM_ env.mcpState $ \st -> liftIO $ recordTestState st idx test'
       Nothing -> pure ()
 
 findFailedTests

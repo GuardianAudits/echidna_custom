@@ -38,3 +38,5 @@ _crytic_missing_source.sol
 # Local backup artifacts
 echidna.cabal.before
 *.cabal.before
+RELEASE*.md
+release*.md

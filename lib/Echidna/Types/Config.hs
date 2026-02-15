@@ -38,6 +38,12 @@ data MCPConf = MCPConf
   , maxEvents  :: Int
   , maxReverts :: Int
   , maxTxs     :: Int
+  , maxReproducerArtifacts :: Int
+  , maxReproducerTxs      :: Int
+  , reproducerEventsLimit  :: Int
+  , reproducerResultTTLMinutes :: Int
+  , includeCallData        :: Bool
+  , maxReproducerJsonBytes :: Int
   } deriving (Show, Eq)
 
 defaultMCPConf :: MCPConf
@@ -50,6 +56,12 @@ defaultMCPConf = MCPConf
   , maxEvents = 5000
   , maxReverts = 1000
   , maxTxs = 1000
+  , maxReproducerArtifacts = 5000
+  , maxReproducerTxs = 128
+  , reproducerEventsLimit = 500
+  , reproducerResultTTLMinutes = 120
+  , includeCallData = False
+  , maxReproducerJsonBytes = 256000
   }
 
 data CorpusSyncValidate

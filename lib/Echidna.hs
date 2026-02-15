@@ -10,6 +10,8 @@ import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as Map
 import Data.Maybe (mapMaybe)
 import Data.Set qualified as Set
+import Data.Time (getCurrentTime)
+import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Text qualified as T
 import System.FilePath ((</>))
 import System.IO (stderr, hPutStrLn)
@@ -131,7 +133,19 @@ mkEnv cfg buildOutput tests world slitherInfo = do
   fetchSession <- EVM.Fetch.mkSession cfg.campaignConf.corpusDir (fromIntegral <$> cfg.rpcBlock)
   contractNameCache <- newIORef mempty
   mcpState <- if cfg.mcpConf.enabled
-    then Just <$> newMCPState cfg.mcpConf.maxEvents cfg.mcpConf.maxReverts cfg.mcpConf.maxTxs
+    then do
+      campaignId <- T.pack . formatTime defaultTimeLocale "%Y%m%dT%H%M%S%q" <$> getCurrentTime
+      Just <$> newMCPState
+        cfg.mcpConf.maxEvents
+        cfg.mcpConf.maxReverts
+        cfg.mcpConf.maxTxs
+        cfg.mcpConf.maxReproducerArtifacts
+        cfg.mcpConf.maxReproducerTxs
+        cfg.mcpConf.reproducerEventsLimit
+        cfg.mcpConf.reproducerResultTTLMinutes
+        cfg.mcpConf.maxReproducerJsonBytes
+        cfg.mcpConf.includeCallData
+        campaignId
     else pure Nothing
   -- TODO put in real path
   let dapp = dappInfo "/" buildOutput

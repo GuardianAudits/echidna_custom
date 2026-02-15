@@ -5,6 +5,7 @@ module Echidna.MCP.Store
   , readSince
   , readById
   , MCPState(..)
+  , MCPEvent
   , MCPControl(..)
   , newMCPState
   , pauseMCP
@@ -27,6 +28,9 @@ import Echidna.MCP.Types
   , MCPRevert
   , MCPTrace
   , MCPTx
+  , MCPReproducerArtifact
+  , MCPReproducerJob
+  , MCPReproducerEvent
   , HandlerStat
   , MCPRunCounters(..)
   )
@@ -77,19 +81,47 @@ data MCPState = MCPState
   , handlers   :: IORef (Map Text HandlerStat)
   , logicalByWorker :: IORef (Map Int LogicalCoverage)
   , counters   :: IORef MCPRunCounters
+  , reproducerArtifacts :: IORef (Map Text MCPReproducerArtifact)
+  , reproducerEvents :: IORef (RingBuffer MCPReproducerEvent)
+  , reproducerJobs :: IORef (Map Text MCPReproducerJob)
+  , reproducerNextJobId :: IORef Int
+  , campaignId :: Text
+  , reproducerResultTTLMinutes :: Int
+  , reproducerEventsLimit :: Int
+  , maxReproducerJsonBytes :: Int
+  , includeCallData :: Bool
+  , maxReproducerArtifacts :: Int
+  , maxReproducerTxs :: Int
   , control    :: MCPControl
   , phase      :: IORef Text
   }
 
-newMCPState :: Int -> Int -> Int -> IO MCPState
-newMCPState maxEvents maxReverts maxTxs = do
+newMCPState
+  :: Int -> Int -> Int -> Int -> Int
+  -> Int -> Int -> Int -> Bool -> Text
+  -> IO MCPState
+newMCPState
+  maxEvents
+  maxReverts
+  maxTxs
+  maxReproducerArtifacts
+  maxReproducerTxs
+  reproducerEventsLimit
+  reproducerResultTTLMinutes
+  maxReproducerJsonBytes
+  includeCallData
+  campaignId = do
   eventsRef <- newRingBuffer maxEvents
   revertsRef <- newRingBuffer maxReverts
   tracesRef <- newRingBuffer maxReverts
   txsRef <- newRingBuffer maxTxs
+  reproducerEventsRef <- newRingBuffer reproducerEventsLimit
   handlersRef <- newIORef mempty
   logicalRef <- newIORef mempty
   countersRef <- newIORef (MCPRunCounters 0 0 0)
+  reproducerArtifactsRef <- newIORef mempty
+  reproducerJobsRef <- newIORef mempty
+  reproducerNextJobIdRef <- newIORef 0
   gate <- newMVar ()
   stopRef <- newIORef False
   phaseRef <- newIORef "running"
@@ -98,9 +130,20 @@ newMCPState maxEvents maxReverts maxTxs = do
     , reverts = revertsRef
     , traces = tracesRef
     , txs = txsRef
+    , reproducerEvents = reproducerEventsRef
     , handlers = handlersRef
     , logicalByWorker = logicalRef
     , counters = countersRef
+    , reproducerArtifacts = reproducerArtifactsRef
+    , reproducerJobs = reproducerJobsRef
+    , reproducerNextJobId = reproducerNextJobIdRef
+    , campaignId = campaignId
+    , reproducerResultTTLMinutes = reproducerResultTTLMinutes
+    , reproducerEventsLimit = reproducerEventsLimit
+    , maxReproducerJsonBytes = maxReproducerJsonBytes
+    , includeCallData = includeCallData
+    , maxReproducerArtifacts = maxReproducerArtifacts
+    , maxReproducerTxs = maxReproducerTxs
     , control = MCPControl gate stopRef
     , phase = phaseRef
     }
