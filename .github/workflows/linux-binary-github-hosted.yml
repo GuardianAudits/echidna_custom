@@ -1,0 +1,71 @@
+name: "Build Linux Binary (GitHub-hosted)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      hevm_repository:
+        description: "hevm repository (owner/repo)"
+        required: true
+        default: "argotorg/hevm"
+      hevm_ref:
+        description: "hevm git ref (branch/tag/sha)"
+        required: true
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-x86_64:
+    name: Build x86_64-linux redistributable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout echidna
+        uses: actions/checkout@v4
+
+      - name: Checkout hevm
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.hevm_repository }}
+          ref: ${{ inputs.hevm_ref }}
+          path: hevm-src
+          fetch-depth: 1
+          token: ${{ secrets.HEVM_CHECKOUT_TOKEN || github.token }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Configure Cachix (pull-only)
+        uses: cachix/cachix-action@v16
+        with:
+          name: trailofbits
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          echo "value=HEAD-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build redistributable echidna
+        env:
+          HEVM_SRC: ${{ github.workspace }}/hevm-src
+        run: |
+          nix build --impure ".#packages.x86_64-linux.echidna-redistributable" --out-link redistributable
+          file ./redistributable/bin/echidna
+          ldd ./redistributable/bin/echidna || true
+
+      - name: Pack artifact
+        id: pack
+        shell: bash
+        run: |
+          tarball="echidna-${{ steps.version.outputs.value }}-x86_64-linux.tar.gz"
+          tar -czf "$tarball" -C ./redistributable/bin echidna
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: echidna-redistributable-x86_64-linux
+          path: ${{ steps.pack.outputs.tarball }}
