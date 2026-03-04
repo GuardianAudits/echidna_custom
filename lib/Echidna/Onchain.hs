@@ -10,6 +10,7 @@ module Echidna.Onchain
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (readMVar)
 import Control.Exception (catch, SomeException)
 import Control.Monad (when, forM_)
@@ -27,6 +28,7 @@ import Network.Wreq.Session qualified as Session
 import Optics (view)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import System.IO (hPutStrLn, stderr)
 import Text.Read (readMaybe)
 
 import EVM (bytecode)
@@ -69,22 +71,31 @@ etherscanApiKey = do
   pure (Text.pack <$> val)
 
 safeFetchContractFrom :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> Text -> Addr -> IO (EVM.Fetch.FetchResult Contract)
-safeFetchContractFrom session rpcBlock rpcUrl addr = do
-  catch
-    (do
-      res <- EVM.Fetch.fetchContractWithSession defaultConfig session rpcBlock rpcUrl addr
-      pure $ case res of
-        EVM.Fetch.FetchSuccess c status -> EVM.Fetch.FetchSuccess (EVM.Fetch.makeContractFromRPC c) status
-        EVM.Fetch.FetchFailure status -> EVM.Fetch.FetchFailure status
-        EVM.Fetch.FetchError e -> EVM.Fetch.FetchError e
-    )
-    (\(e :: HttpException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
+safeFetchContractFrom session rpcBlock rpcUrl addr =
+  retryFetch 3 $ do
+    res <- EVM.Fetch.fetchContractWithSession defaultConfig session rpcBlock rpcUrl addr
+    pure $ case res of
+      EVM.Fetch.FetchSuccess c status -> EVM.Fetch.FetchSuccess (EVM.Fetch.makeContractFromRPC c) status
+      EVM.Fetch.FetchFailure status -> EVM.Fetch.FetchFailure status
+      EVM.Fetch.FetchError e -> EVM.Fetch.FetchError e
 
 safeFetchSlotFrom :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> Text -> Addr -> W256 -> IO (EVM.Fetch.FetchResult W256)
 safeFetchSlotFrom session rpcBlock rpcUrl addr slot =
-  catch
-    (EVM.Fetch.fetchSlotWithCache defaultConfig session rpcBlock rpcUrl addr slot)
+  retryFetch 3 $
+    EVM.Fetch.fetchSlotWithCache defaultConfig session rpcBlock rpcUrl addr slot
+
+-- | Retry an IO action that may throw HttpException, with exponential backoff.
+-- On the final attempt (retries=0), catches the exception and returns FetchError.
+-- This preserves the existing crash behavior in Exec.hs (FetchError -> error).
+retryFetch :: Int -> IO (EVM.Fetch.FetchResult a) -> IO (EVM.Fetch.FetchResult a)
+retryFetch 0 action =
+  catch action
     (\(e :: HttpException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
+retryFetch retries action =
+  catch action $ \(e :: HttpException) -> do
+    hPutStrLn stderr $ "WARNING: RPC fetch failed (" <> show retries <> " retries left): " <> show e
+    threadDelay 2_000_000
+    retryFetch (retries - 1) action
 
 -- | "Reverse engineer" the SolcContract and SourceCache structures for the
 -- code fetched from the outside

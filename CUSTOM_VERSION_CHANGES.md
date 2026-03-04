@@ -714,3 +714,25 @@ Client:
 - `validate=execute` currently behaves the same as `replay` (cheap structural validation only).
 - **Nix build gotcha:** `flake.nix` uses a git-cleaned source tree. If you add new `.hs` files and don't `git add` them, `nix build` will fail with errors like `Could not find module ‘Echidna.CorpusSync’`.
 - Build note: because this repo uses `NoFieldSelectors` + `OverloadedRecordDot`, the corpus sync code imports the relevant record types with `(..)` (e.g., `EConfig`, `CampaignConf`, `CorpusSyncBehaviorConf`) so record-dot field access can be resolved by GHC.
+
+---
+
+## 10) RPC Fetch Retry + Timeout Hardening
+
+**Problem:** Echidna crashes with `ResponseTimeout` when fetching storage slots through Anvil → upstream RPC (e.g. Tenderly). wreq's default timeout is 30s, but Anvil's upstream timeout is 45s, so Echidna gives up before Anvil gets the response.
+
+### Changes
+
+**hevm_custom** (`src/EVM/Fetch.hs`):
+- `mkSession` now creates a wreq session with 60s response timeout (up from 30s default) so it outlasts Anvil's 45s upstream timeout.
+
+**echidna_custom** (`lib/Echidna/Onchain.hs`):
+- Added `retryFetch` helper: retries RPC fetch calls up to 3 times with 2s backoff between attempts.
+- `safeFetchContractFrom` and `safeFetchSlotFrom` now use `retryFetch` instead of bare `catch`.
+- After all retries fail, returns `FetchError` which still crashes in `Exec.hs` (preserving existing fail-fast behavior).
+
+### Build note
+Requires paired hevm_custom branch `fix/rpc-timeout-60s` for the 60s timeout. Build with:
+```bash
+HEVM_SRC=/path/to/hevm_custom nix build .#echidna --impure -L
+```
