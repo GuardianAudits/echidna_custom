@@ -1,4 +1,4 @@
-name: "Build Linux Binary (GitHub-hosted)"
+name: "Build All Platforms (GitHub-hosted)"
 
 on:
   workflow_dispatch:
@@ -16,10 +16,30 @@ permissions:
   contents: read
 
 jobs:
-  build-linux-x86_64:
-    name: Build x86_64-linux redistributable
-    runs-on: ubuntu-24.04
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (x86_64)
+            tuple: x86_64-linux
+            system: x86_64-linux
+            runner: ubuntu-24.04
+          - name: Linux (aarch64)
+            tuple: aarch64-linux
+            system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - name: macOS (x86_64)
+            tuple: x86_64-macos
+            system: x86_64-darwin
+            runner: macos-13
+          - name: macOS (aarch64)
+            tuple: aarch64-macos
+            system: aarch64-darwin
+            runner: macos-14
 
     steps:
       - name: Checkout echidna
@@ -52,20 +72,20 @@ jobs:
         env:
           HEVM_SRC: ${{ github.workspace }}/hevm-src
         run: |
-          nix build --impure ".#packages.x86_64-linux.echidna-redistributable" --out-link redistributable
+          nix build --impure ".#packages.${{ matrix.system }}.echidna-redistributable" --out-link redistributable
           file ./redistributable/bin/echidna
-          ldd ./redistributable/bin/echidna || true
+          ldd ./redistributable/bin/echidna || otool -L ./redistributable/bin/echidna || true
 
       - name: Pack artifact
         id: pack
         shell: bash
         run: |
-          tarball="echidna-${{ steps.version.outputs.value }}-x86_64-linux.tar.gz"
+          tarball="echidna-${{ steps.version.outputs.value }}-${{ matrix.tuple }}.tar.gz"
           tar -czf "$tarball" -C ./redistributable/bin echidna
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: echidna-redistributable-x86_64-linux
+          name: echidna-redistributable-${{ matrix.tuple }}
           path: ${{ steps.pack.outputs.tarball }}
