@@ -59,6 +59,8 @@ instance FromJSON EConfigWithUsage where
               <*> corpusSyncConfParser
               <*> v ..:? "allEvents" ..!= False
               <*> v ..:? "rpcUrl"
+              <*> fallbackRpcUrlsParser
+              <*> v ..:? "rpcTimeout"
               <*> v ..:? "rpcBlock"
               <*> v ..:? "etherscanApiKey"
               <*> v ..:? "projectName"
@@ -67,6 +69,14 @@ instance FromJSON EConfigWithUsage where
       useKey k = modify' $ Set.insert k
       x ..:? k = useKey k >> lift (x .:? k)
       x ..!= y = fromMaybe y <$> x
+
+      -- Parse fallback RPC URLs from either a list (fallbackRpcUrls) or a
+      -- single value (fallbackRpcUrl). Both keys are tracked for usage.
+      fallbackRpcUrlsParser = do
+        mList <- v ..:? "fallbackRpcUrls"
+        mSingle <- v ..:? "fallbackRpcUrl"
+        pure $ fromMaybe [] mList <> maybe [] (:[]) mSingle
+
       -- Parse as unbounded Integer and see if it fits into W256
       getWord256 k def = do
         value :: Integer <- fromMaybe (fromIntegral (def :: W256)) <$> v ..:? k

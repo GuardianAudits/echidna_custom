@@ -1,12 +1,14 @@
 name: "Build All Platforms (GitHub-hosted)"
 
 on:
+  push:
+    branches: [fix/rpc-fetch-retry]
   workflow_dispatch:
     inputs:
       hevm_repository:
         description: "hevm repository (owner/repo)"
         required: true
-        default: "argotorg/hevm"
+        default: "GuardianAudits/hevm_custom"
       hevm_ref:
         description: "hevm git ref (branch/tag/sha)"
         required: true
@@ -28,14 +30,6 @@ jobs:
             tuple: x86_64-linux
             system: x86_64-linux
             runner: ubuntu-24.04
-          - name: Linux (aarch64)
-            tuple: aarch64-linux
-            system: aarch64-linux
-            runner: ubuntu-24.04-arm
-          - name: macOS (x86_64)
-            tuple: x86_64-macos
-            system: x86_64-darwin
-            runner: macos-13
           - name: macOS (aarch64)
             tuple: aarch64-macos
             system: aarch64-darwin
@@ -48,8 +42,8 @@ jobs:
       - name: Checkout hevm
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.hevm_repository }}
-          ref: ${{ inputs.hevm_ref }}
+          repository: ${{ inputs.hevm_repository || 'GuardianAudits/hevm_custom' }}
+          ref: ${{ inputs.hevm_ref || 'main' }}
           path: hevm-src
           fetch-depth: 1
           token: ${{ secrets.HEVM_CHECKOUT_TOKEN || github.token }}

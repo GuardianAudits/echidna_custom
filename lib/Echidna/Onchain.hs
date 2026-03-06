@@ -12,7 +12,7 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (readMVar)
-import Control.Exception (catch, SomeException)
+import Control.Exception (SomeException(..), catch, toException, try)
 import Control.Monad (when, forM_)
 import Data.ByteString qualified as BS
 import Data.ByteString.UTF8 qualified as UTF8
@@ -23,12 +23,12 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Data.Word (Word64)
-import Network.HTTP.Simple (HttpException)
 import Network.Wreq.Session qualified as Session
 import Optics (view)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
+import System.Timeout qualified
 import Text.Read (readMaybe)
 
 import EVM (bytecode)
@@ -70,32 +70,65 @@ etherscanApiKey = do
   val <- lookupEnv "ETHERSCAN_API_KEY"
   pure (Text.pack <$> val)
 
-safeFetchContractFrom :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> Text -> Addr -> IO (EVM.Fetch.FetchResult Contract)
-safeFetchContractFrom session rpcBlock rpcUrl addr =
-  retryFetch 3 $ do
-    res <- EVM.Fetch.fetchContractWithSession defaultConfig session rpcBlock rpcUrl addr
+safeFetchContractFrom
+  :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> Text -> [Text] -> Maybe Int
+  -> Addr -> IO (EVM.Fetch.FetchResult Contract)
+safeFetchContractFrom session rpcBlock rpcUrl fallbacks timeout addr =
+  retryForever (rpcUrl : fallbacks) timeout $ \url -> do
+    res <- EVM.Fetch.fetchContractWithSession defaultConfig session rpcBlock url addr
     pure $ case res of
       EVM.Fetch.FetchSuccess c status -> EVM.Fetch.FetchSuccess (EVM.Fetch.makeContractFromRPC c) status
       EVM.Fetch.FetchFailure status -> EVM.Fetch.FetchFailure status
       EVM.Fetch.FetchError e -> EVM.Fetch.FetchError e
 
-safeFetchSlotFrom :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> Text -> Addr -> W256 -> IO (EVM.Fetch.FetchResult W256)
-safeFetchSlotFrom session rpcBlock rpcUrl addr slot =
-  retryFetch 3 $
-    EVM.Fetch.fetchSlotWithCache defaultConfig session rpcBlock rpcUrl addr slot
+safeFetchSlotFrom
+  :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> Text -> [Text] -> Maybe Int
+  -> Addr -> W256 -> IO (EVM.Fetch.FetchResult W256)
+safeFetchSlotFrom session rpcBlock rpcUrl fallbacks timeout addr slot =
+  retryForever (rpcUrl : fallbacks) timeout $ \url ->
+    EVM.Fetch.fetchSlotWithCache defaultConfig session rpcBlock url addr slot
 
--- | Retry an IO action that may throw HttpException, with exponential backoff.
--- On the final attempt (retries=0), catches the exception and returns FetchError.
--- This preserves the existing crash behavior in Exec.hs (FetchError -> error).
-retryFetch :: Int -> IO (EVM.Fetch.FetchResult a) -> IO (EVM.Fetch.FetchResult a)
-retryFetch 0 action =
-  catch action
-    (\(e :: HttpException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
-retryFetch retries action =
-  catch action $ \(e :: HttpException) -> do
-    hPutStrLn stderr $ "WARNING: RPC fetch failed (" <> show retries <> " retries left): " <> show e
-    threadDelay 2_000_000
-    retryFetch (retries - 1) action
+-- | Retry an RPC fetch forever with exponential backoff, cycling through URLs.
+-- Never crashes — keeps retrying until it gets a non-error result.
+-- Backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped). Resets after a successful fetch.
+retryForever
+  :: [Text]                                    -- ^ RPC URLs (primary + fallbacks)
+  -> Maybe Int                                 -- ^ Optional per-request timeout (ms)
+  -> (Text -> IO (EVM.Fetch.FetchResult a))    -- ^ Fetch action given a URL
+  -> IO (EVM.Fetch.FetchResult a)
+retryForever urls mbTimeout action = go urls 1_000_000
+  where
+  maxDelay = 30_000_000 -- 30s cap
+
+  tryUrl url = do
+    let act = action url
+    res <- case mbTimeout of
+      Nothing -> try @SomeException act
+      Just ms -> do
+        mr <- System.Timeout.timeout (ms * 1000) (try @SomeException act)
+        pure $ case mr of
+          Just r  -> r
+          Nothing -> Left (toException $ userError $ "RPC timeout after " <> show ms <> "ms")
+    pure $ case res of
+      Right r -> r
+      Left e  -> EVM.Fetch.FetchError (Text.pack $ show e)
+
+  fetchError (EVM.Fetch.FetchError e) = Just e
+  fetchError _ = Nothing
+
+  go [] delay = do
+    hPutStrLn stderr $ "WARNING: All RPC URLs failed, waiting "
+      <> show (delay `div` 1_000_000) <> "s before retrying..."
+    threadDelay delay
+    go urls (min maxDelay (delay * 2))
+  go (url:rest) delay = do
+    res <- tryUrl url
+    case fetchError res of
+      Just e -> do
+        hPutStrLn stderr $ "WARNING: RPC fetch failed on "
+          <> Text.unpack url <> ": " <> Text.unpack e
+        go rest delay
+      Nothing -> pure res
 
 -- | "Reverse engineer" the SolcContract and SourceCache structures for the
 -- code fetched from the outside
