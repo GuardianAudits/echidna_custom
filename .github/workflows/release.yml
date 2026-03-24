@@ -9,7 +9,7 @@ on:
       hevm_ref:
         description: "hevm git ref (branch/tag/sha)"
         required: true
-        default: "master"
+        default: "main"
 
 jobs:
   nixBuild:
@@ -36,10 +36,12 @@ jobs:
           - name: macOS (x86_64)
             tuple: x86_64-macos
             system: x86_64-darwin
-            runner: macos-15-intel
+            timeout: 240
+            runner: macos-15
           - name: macOS (aarch64)
             tuple: aarch64-macos
             system: aarch64-darwin
+            timeout: 240
             runner: macos-15
     steps:
       - name: Checkout
@@ -54,8 +56,20 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.HEVM_CHECKOUT_TOKEN || github.token }}
 
+      - name: Install Rosetta
+        if: matrix.system == 'x86_64-darwin'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
       - name: Install Nix
+        if: matrix.system != 'x86_64-darwin'
         uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Install Nix (x86_64-darwin via Apple Silicon host)
+        if: matrix.system == 'x86_64-darwin'
+        uses: DeterminateSystems/nix-installer-action@v21
+        with:
+          extra-conf: |
+            extra-platforms = x86_64-darwin aarch64-darwin
 
       - name: Configure Cachix
         uses: cachix/cachix-action@v16
@@ -75,12 +89,6 @@ jobs:
         env:
           GIT_REF: ${{ github.ref }}
           GIT_SHA: ${{ github.sha }}
-
-      - name: Build dynamic echidna
-        env:
-          HEVM_SRC: ${{ github.workspace }}/hevm-src
-        run: |
-          nix build .#echidna --impure
 
       - name: Build redistributable echidna
         env:
