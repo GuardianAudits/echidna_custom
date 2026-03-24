@@ -31,6 +31,8 @@ benchmark/out/
 
 # Local portable build artifacts (generated binaries/tarballs)
 portable/
+portable-binaries/
+
 
 # Crytic-compile scratch output
 _crytic_missing_source.sol
@@ -40,3 +42,4 @@ echidna.cabal.before
 *.cabal.before
 RELEASE*.md
 release*.md
+changes.md

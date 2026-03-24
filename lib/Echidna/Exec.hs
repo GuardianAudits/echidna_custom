@@ -171,19 +171,20 @@ execTxWith executeTx tx = do
     -- the execution by recursively calling `runFully`.
     case getQuery vmResult of
       -- A previously unknown contract is required
-      Just q@(PleaseFetchContract addr _ continuation) -> do
+      Just (PleaseFetchContract addr _ continuation) -> do
         --logMsg $ "INFO: Performing RPC: " <> show q
         case config.rpcUrl of
           Just rpcUrl -> do
             session <- asks (.fetchSession)
-            ret <- liftIO $ safeFetchContractFrom session rpcBlock rpcUrl addr
+            ret <- liftIO $
+              safeFetchContractFrom session rpcBlock rpcUrl config.fallbackRpcUrls config.rpcTimeout addr
             case ret of
               EVM.Fetch.FetchSuccess contract _ -> do
                 fromEVM (continuation contract)
               EVM.Fetch.FetchFailure _ -> do
                 fromEVM (continuation emptyAccount)
-              EVM.Fetch.FetchError e -> do
-                error $ "ERROR: Failed to fetch contract: " <> show q <> " " <> T.unpack e
+              EVM.Fetch.FetchError _ -> do
+                fromEVM (continuation emptyAccount)
           Nothing -> do
             --logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
             -- TODO: How should we fail here? RPC is not configured but VM
@@ -196,7 +197,8 @@ execTxWith executeTx tx = do
         case config.rpcUrl of
           Just rpcUrl -> do
             session <- asks (.fetchSession)
-            ret <- liftIO $ safeFetchSlotFrom session rpcBlock rpcUrl addr slot
+            ret <- liftIO $
+              safeFetchSlotFrom session rpcBlock rpcUrl config.fallbackRpcUrls config.rpcTimeout addr slot
             case ret of
               EVM.Fetch.FetchSuccess value status -> do
                 -- Log only in text mode, ignoring quiet flag as this is important info
@@ -204,8 +206,8 @@ execTxWith executeTx tx = do
                 fromEVM (continuation value)
               EVM.Fetch.FetchFailure _ -> do
                 fromEVM (continuation 0)
-              EVM.Fetch.FetchError e -> do
-                error $ "ERROR: Failed to fetch slot: " <> show q <> " " <> T.unpack e
+              EVM.Fetch.FetchError _ -> do
+                fromEVM (continuation 0)
           Nothing -> do
             --logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
             -- Use the zero slot

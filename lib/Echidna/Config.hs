@@ -1,6 +1,7 @@
 module Echidna.Config where
 
 import Control.Applicative ((<|>))
+import Control.Monad (forM_, when)
 import Control.Monad.State (StateT(..), runStateT, modify')
 import Control.Monad.Trans (lift)
 import Data.Aeson
@@ -8,6 +9,7 @@ import Data.Aeson.KeyMap (keys)
 import Data.Bool (bool)
 import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
+import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (isPrefixOf)
@@ -59,6 +61,8 @@ instance FromJSON EConfigWithUsage where
               <*> corpusSyncConfParser
               <*> v ..:? "allEvents" ..!= False
               <*> v ..:? "rpcUrl"
+              <*> fallbackRpcUrlsParser
+              <*> v ..:? "rpcTimeout"
               <*> v ..:? "rpcBlock"
               <*> v ..:? "etherscanApiKey"
               <*> v ..:? "projectName"
@@ -67,6 +71,10 @@ instance FromJSON EConfigWithUsage where
       useKey k = modify' $ Set.insert k
       x ..:? k = useKey k >> lift (x .:? k)
       x ..!= y = fromMaybe y <$> x
+      fallbackRpcUrlsParser = do
+        mList <- v ..:? "fallbackRpcUrls"
+        mSingle <- v ..:? "fallbackRpcUrl"
+        pure $ fromMaybe [] mList <> maybe [] (:[]) mSingle
       -- Parse as unbounded Integer and see if it fits into W256
       getWord256 k def = do
         value :: Integer <- fromMaybe (fromIntegral (def :: W256)) <$> v ..:? k
@@ -129,32 +137,69 @@ instance FromJSON EConfigWithUsage where
           Just s                 -> fail $ "Unrecognized SMT solver: " <> s
           Nothing                -> pure Bitwuzla
 
-      solConfParser = SolConf
-        <$> v ..:? "contractAddr"    ..!= defaultContractAddr
-        <*> v ..:? "deployer"        ..!= defaultDeployerAddr
-        <*> v ..:? "sender"          ..!= Set.fromList [0x10000, 0x20000, defaultDeployerAddr]
-        <*> v ..:? "balanceAddr"     ..!= 0xffffffff
-        <*> v ..:? "balanceContract" ..!= 0
-        <*> v ..:? "codeSize"        ..!= 0xffffffff
-        <*> v ..:? "prefix"          ..!= "echidna_"
-        <*> v ..:? "disableSlither"  ..!= False
-        <*> v ..:? "cryticArgs"      ..!= []
-        <*> v ..:? "solcArgs"        ..!= ""
-        <*> v ..:? "solcLibs"        ..!= []
-        <*> v ..:? "autoLinkLibraries" ..!= False
-        <*> v ..:? "autoLinkLibrariesStart" ..!= 0x10
-        <*> v ..:? "autoLinkLibrariesMax" ..!= 240
-        <*> v ..:? "autoLinkLibrariesOutDir" ..!= Nothing
-        <*> v ..:? "quiet"           ..!= False
-        <*> v ..:? "deployContracts" ..!= []
-        <*> v ..:? "deployBytecodes" ..!= []
-        <*> ((<|>) <$> v ..:? "allContracts"
-                    -- TODO: keep compatible with the old name for a while
-                    <*> lift (v .:? "multi-abi")) ..!= False
-        <*> mode
-        <*> v ..:? "testDestruction" ..!= False
-        <*> v ..:? "allowFFI"        ..!= False
-        <*> fnFilter
+      solConfParser = do
+        contractAddr <- v ..:? "contractAddr" ..!= defaultContractAddr
+        deployer <- v ..:? "deployer" ..!= defaultDeployerAddr
+        sender <- v ..:? "sender" ..!= Set.fromList [0x10000, 0x20000, defaultDeployerAddr]
+        balanceAddr <- v ..:? "balanceAddr" ..!= 0xffffffff
+        balanceContract <- v ..:? "balanceContract" ..!= 0
+        codeSize <- v ..:? "codeSize" ..!= 0xffffffff
+        prefix <- v ..:? "prefix" ..!= "echidna_"
+        disableSlither <- v ..:? "disableSlither" ..!= False
+        cryticArgs <- v ..:? "cryticArgs" ..!= []
+        solcArgs <- v ..:? "solcArgs" ..!= ""
+        solcLibs <- v ..:? "solcLibs" ..!= []
+        autoLinkLibraries <- v ..:? "autoLinkLibraries" ..!= False
+        autoLinkLibrariesStart <- v ..:? "autoLinkLibrariesStart" ..!= 0x10
+        autoLinkLibrariesMax <- v ..:? "autoLinkLibrariesMax" ..!= 240
+        autoLinkLibrariesOutDir <- v ..:? "autoLinkLibrariesOutDir" ..!= Nothing
+        quiet <- v ..:? "quiet" ..!= False
+        deployContracts <- v ..:? "deployContracts" ..!= []
+        deployBytecodes <- v ..:? "deployBytecodes" ..!= []
+        allContracts <- ((<|>) <$> v ..:? "allContracts"
+                         -- TODO: keep compatible with the old name for a while
+                         <*> lift (v .:? "multi-abi")) ..!= False
+        testMode <- mode
+        testDestruction <- v ..:? "testDestruction" ..!= False
+        allowFFI <- v ..:? "allowFFI" ..!= False
+        methodFilter <- fnFilter
+        functionWeights <- v ..:? "functionWeights" ..!= Map.empty
+        defaultFunctionWeight <- v ..:? "defaultFunctionWeight" ..!= 1
+
+        when (defaultFunctionWeight <= 0) $
+          fail "defaultFunctionWeight must be greater than 0"
+
+        forM_ (Map.toList functionWeights) $ \(sig, weight) ->
+          when (weight <= 0) $
+            fail $ "functionWeights entry for " <> show sig <> " must be greater than 0"
+
+        pure SolConf
+          { contractAddr
+          , deployer
+          , sender
+          , balanceAddr
+          , balanceContract
+          , codeSize
+          , prefix
+          , disableSlither
+          , cryticArgs
+          , solcArgs
+          , solcLibs
+          , autoLinkLibraries
+          , autoLinkLibrariesStart
+          , autoLinkLibrariesMax
+          , autoLinkLibrariesOutDir
+          , quiet
+          , deployContracts
+          , deployBytecodes
+          , allContracts
+          , testMode
+          , testDestruction
+          , allowFFI
+          , methodFilter
+          , functionWeights
+          , defaultFunctionWeight
+          }
         where
         mode = v ..:? "testMode" >>= \case
           Just s  -> pure $ validateTestMode s

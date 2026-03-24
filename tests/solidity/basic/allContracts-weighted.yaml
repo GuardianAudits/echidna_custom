@@ -1,0 +1,4 @@
+allContracts: true
+functionWeights:
+  "A.trigger_bug()": 5
+defaultFunctionWeight: 2

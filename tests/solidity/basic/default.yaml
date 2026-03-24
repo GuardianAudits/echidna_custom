@@ -76,6 +76,11 @@ maxBlockDelay: 60480
 filterFunctions: []
 # by default, blacklist methods in filterFunctions
 filterBlacklist: true
+# relative function-selection weights keyed by the same exact qualified
+# signature format used in filterFunctions
+functionWeights: {}
+# fallback weight for functions not listed in functionWeights
+defaultFunctionWeight: 1
 # enable or disable ffi HEVM cheatcode
 allowFFI: false
 #directory to save the corpus; by default is disabled
@@ -96,6 +101,12 @@ mutConsts: [1, 1, 1, 1]
 maxValue: 100000000000000000000 # 100 eth
 # URL to fetch contracts over RPC
 rpcUrl: null
+# optional fallback RPC URL to try after rpcUrl errors
+fallbackRpcUrl: null
+# optional list of additional fallback RPC URLs
+fallbackRpcUrls: []
+# optional per-request RPC timeout in milliseconds
+rpcTimeout: null
 # block number to use when fetching over RPC
 rpcBlock: null
 # Etherscan API key

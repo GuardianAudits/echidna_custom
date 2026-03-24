@@ -2,6 +2,7 @@ module Echidna.Types.Solidity where
 
 import Control.Exception (Exception)
 import Data.SemVer (Version, version, toString)
+import Data.Map (Map)
 import Data.Set (Set)
 import Data.Text (Text, unpack)
 
@@ -33,6 +34,7 @@ data SolException
   | SetUpCallFailed
   | NoCryticCompile
   | InvalidMethodFilters Filter
+  | InvalidFunctionWeights [Text]
   | LibraryLinkingError String
   | OutdatedSolcVersion Version
 
@@ -51,6 +53,7 @@ instance Show SolException where
     ConstructorArgs s      -> "Constructor arguments are required: " ++ s
     NoCryticCompile        -> "crytic-compile not installed or not found in PATH. To install it, run:\n   pip install crytic-compile"
     InvalidMethodFilters f -> "Applying the filter " ++ show f ++ " to the methods produces an empty list. Are you filtering the correct functions using `filterFunctions` or fuzzing the correct contract?"
+    InvalidFunctionWeights fs -> "Configured functionWeights entries do not match any callable function in this run: " ++ show fs
     SetUpCallFailed        -> "Calling the setUp() function failed (revert, out-of-gas, sending ether to a non-payable constructor, etc.)"
     DeploymentFailed a t   -> "Deploying the contract " ++ show a ++ " failed (revert, out-of-gas, sending ether to a non-payable constructor, etc.):\n" ++ unpack t
     LibraryLinkingError e -> "Failed to auto-configure linked libraries: " ++ e
@@ -84,6 +87,8 @@ data SolConf = SolConf
   , testDestruction :: Bool             -- ^ Whether or not to add a property to detect contract destruction
   , allowFFI        :: Bool             -- ^ Whether or not to allow FFI hevm cheatcode
   , methodFilter    :: Filter           -- ^ List of methods to avoid or include calling during a campaign
+  , functionWeights :: Map Text Int     -- ^ Relative call-selection weights keyed by qualified function signature
+  , defaultFunctionWeight :: Int        -- ^ Fallback call-selection weight for functions not explicitly listed
   }
 
 defaultContractAddr :: Addr

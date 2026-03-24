@@ -1,0 +1,6 @@
+testMode: assertion
+testLimit: 10000
+shrinkLimit: 1
+seqLen: 20
+seed: 110458910090290204
+workers: 1

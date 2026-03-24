@@ -21,15 +21,22 @@ type FunctionName = Text
 -- A tuple for the name of the function and the 'AbiType's of any arguments it expects.
 type SolSignature = (FunctionName, [AbiType])
 
+data WeightedSignature = WeightedSignature
+  { signature :: SolSignature
+  , qualifiedSignature :: Text
+  , weight :: Int
+  }
+  deriving (Eq, Ord, Show)
+
 -- | Represents a call to a Solidity function.
 -- A tuple for the name of the function and then any 'AbiValue' arguments passed (as a list).
 type SolCall = (FunctionName, [AbiValue])
 
 -- | A contract is just an address with an ABI (for our purposes).
-type ContractA = (Addr, NonEmpty SolSignature)
+type ContractA = (Addr, NonEmpty WeightedSignature)
 
 -- | Indexed by contracts' compile-time codehash; see `CodehashMap`.
-type SignatureMap = Map W256 (NonEmpty SolSignature)
+type SignatureMap = Map W256 (NonEmpty WeightedSignature)
 
 knownBzzrPrefixes :: [ByteString]
 knownBzzrPrefixes =

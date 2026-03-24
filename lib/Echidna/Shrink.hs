@@ -59,7 +59,12 @@ shrinkTest vm test = do
     _ -> pure Nothing
 
 replaceByNoCall :: Tx -> Tx
-replaceByNoCall tx = tx { call = NoCall }
+replaceByNoCall tx =
+  -- Reverted transactions restore the VM snapshot taken before setupTx, so
+  -- their block/time delay never persists in the original execution. A
+  -- replacement NoCall must therefore skip both the call and the delay to keep
+  -- replay semantics aligned with the reverted transaction it stands in for.
+  tx { call = NoCall, delay = (0, 0) }
 
 -- | Given a sequence of transactions, remove useless NoCalls. These are NoCalls
 -- that have both zero increment in timestamp and block number.
@@ -68,8 +73,9 @@ removeUselessNoCalls = mapMaybe f
   where f tx = if isUselessNoCall tx then Nothing else Just tx
 
 -- | Given a VM and a sequence of transactions, execute each transaction except the last one.
--- If a transaction reverts, replace it by a "NoCall" with the same parameters as the original call
--- (e.g. same block increment timestamp and number)
+-- If a transaction reverts, replace it by a "NoCall". The reverted transaction
+-- rolled back its setupTx state, so the replacement must not preserve the
+-- original block/timestamp delay.
 removeReverts :: (MonadIO m, MonadReader Env m, MonadThrow m) => VM Concrete -> [Tx] -> m [Tx]
 removeReverts _ [] = return []
 removeReverts vm txs = do

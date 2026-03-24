@@ -46,7 +46,7 @@ import Echidna.Solidity.LinkedLibraries (autoConfigureFoundryLibraries)
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config (EConfig(..), Env(..))
 import Echidna.Types.Signature
-  (ContractName, SolSignature, SignatureMap, FunctionName)
+  (ContractName, SolSignature, SignatureMap, FunctionName, WeightedSignature(..))
 import Echidna.Types.Solidity
 import Echidna.Types.Test (EchidnaTest(..))
 import Echidna.Types.Tx
@@ -163,6 +163,28 @@ abiOf pref solcContract =
     filter (not . isPrefixOf pref . fst)
            (Map.elems solcContract.abiMap <&> \method -> (method.name, snd <$> method.inputs))
 
+weightSignature :: SolConf -> Text -> SolSignature -> WeightedSignature
+weightSignature solConf contractName sig =
+  let qualifiedSig = encodeSigWithName contractName sig
+      weight = Map.findWithDefault solConf.defaultFunctionWeight qualifiedSig solConf.functionWeights
+  in WeightedSignature
+       { signature = sig
+       , qualifiedSignature = qualifiedSig
+       , weight = weight
+       }
+
+validateFunctionWeights :: MonadThrow m => SolConf -> SignatureMap -> m ()
+validateFunctionWeights solConf abiMapping = do
+  let callableFunctions =
+        Set.fromList
+          [ weightedSig.qualifiedSignature
+          | weightedSig <- concatMap NE.toList (Map.elems abiMapping)
+          ]
+      unmatched =
+        Map.keysSet solConf.functionWeights `Set.difference` callableFunctions
+  unless (Set.null unmatched) $
+    throwM $ InvalidFunctionWeights (Set.toList unmatched)
+
 -- | Given an optional contract name and a list of 'SolcContract's, try to load the specified
 -- contract, or, if not provided, the first contract in the list, into a 'VM' usable for Echidna
 -- testing and extract an ABI and list of tests. Throws exceptions if anything returned doesn't look
@@ -274,16 +296,21 @@ mkSignatureMap solConf mainContract contracts = do
             let filtered = filterMethods contract.contractName
                                          solConf.methodFilter
                                          (abiOf solConf.prefix contract)
-            in (contract.runtimeCodehash,) <$> NE.nonEmpty filtered)
+                weighted = fmap (weightSignature solConf contract.contractName) <$> NE.nonEmpty filtered
+            in (contract.runtimeCodehash,) <$> weighted)
           contracts
       else
         case NE.nonEmpty fabiOfc of
-          Just ne -> Map.singleton mainContract.runtimeCodehash ne
+          Just ne ->
+            Map.singleton
+              mainContract.runtimeCodehash
+              (fmap (weightSignature solConf mainContract.contractName) ne)
           Nothing -> mempty
   when (null abiMapping && isDapptestMode solConf.testMode) $
     throwM NoTests
   when (Map.null abiMapping) $
     throwM $ InvalidMethodFilters solConf.methodFilter
+  validateFunctionWeights solConf abiMapping
   pure abiMapping
 
 mkTests
@@ -381,8 +408,8 @@ filterFallbacks
 filterFallbacks la lb contracts = Map.mapWithKey f
   where
     f k ss | k `elem` keysToIgnore = ss
-    f _ ss = NE.fromList $ case NE.filter (/= fallback) ss of
-                []  -> [fallback] -- No other alternative
+    f _ ss = NE.fromList $ case NE.filter ((/= fallback) . (.signature)) ss of
+                []  -> [NE.head ss] -- No other alternative; keep the existing weighted fallback entry
                 ss' -> ss'
     keysToIgnore = concatMap contractNameToCodehashes (la ++ lb)
     contractNameToCodehashes name = map (.runtimeCodehash) $ filter (\c -> last (T.splitOn ":" c.contractName) == name) contracts
@@ -405,7 +432,7 @@ prepareHashMaps cs as m =
        | otherwise                        -> error "Error processing function hashmaps"
   where
     filterHashMap f xs =
-      Map.mapMaybe (NE.nonEmpty . NE.filter (\s -> f $ (hashSig . encodeSig $ s) `elem` xs))
+      Map.mapMaybe (NE.nonEmpty . NE.filter (\weightedSig -> f $ (hashSig . encodeSig $ weightedSig.signature) `elem` xs))
 
 mkLargeAbiInt :: Int -> AbiValue
 mkLargeAbiInt i = AbiInt i $ 2 ^ (i - 1) - 1

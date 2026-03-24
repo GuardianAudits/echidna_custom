@@ -434,15 +434,19 @@ genAbiCallM genDict (name, types) = do
                          (name, types)
   mutateAbiCall solCall
 
+selectWeightedSignature :: MonadRandom m => NonEmpty WeightedSignature -> m WeightedSignature
+selectWeightedSignature =
+  Random.weighted . fmap (\weightedSig -> (weightedSig, fromIntegral weightedSig.weight)) . NE.toList
+
 -- | Given a list of 'SolSignature's, generate a random 'SolCall' for one,
 -- possibly with a dictionary.
 genInteractionsM
   :: MonadRandom m
   => GenDict
-  -> NonEmpty SolSignature
+  -> NonEmpty WeightedSignature
   -> m SolCall
 genInteractionsM genDict solSignatures =
-  rElem solSignatures >>= genAbiCallM genDict
+  selectWeightedSignature solSignatures >>= genAbiCallM genDict . (.signature)
 
 abiCalldata :: Text -> Vector AbiValue -> ByteString
 abiCalldata s xs = BSLazy.toStrict . runPut $ do

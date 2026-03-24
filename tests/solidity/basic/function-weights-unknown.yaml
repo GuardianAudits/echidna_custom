@@ -1,0 +1,3 @@
+functionWeights:
+  "Test.missing(int256)": 5
+defaultFunctionWeight: 2

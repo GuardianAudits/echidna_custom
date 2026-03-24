@@ -2,7 +2,9 @@ module Tests.Config (configTests) where
 
 import Control.Monad (void)
 import Data.Function ((&))
+import Data.Map qualified as Map
 import Data.Maybe (isJust, isNothing)
+import Data.Text (pack)
 import Data.Yaml qualified as Y
 import Optics.Core (sans)
 import Test.Tasty (TestTree, testGroup)
@@ -11,6 +13,7 @@ import Test.Tasty.HUnit (testCase, assertBool, assertFailure)
 import Echidna.Config (defaultConfig, parseConfig)
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config (EConfigWithUsage(..), EConfig(..))
+import Echidna.Types.Solidity (SolConf(..))
 import Echidna.Types.Tx (TxConf(..))
 
 configTests :: TestTree
@@ -44,6 +47,37 @@ configTests = testGroup "Configuration tests" $
       assertBool "showShrinkingEvery should be 10" $ config.campaignConf.showShrinkingEvery == Just 10
   , testCase "showShrinkingEvery defaults to Nothing" $
       assertBool "" $ isNothing (defaultConfig.campaignConf.showShrinkingEvery)
+  , testCase "parse functionWeights" $ do
+      config <- (.econfig) <$> parseConfig "basic/function-weights.yaml"
+      assertBool "defaultFunctionWeight should be 7" $ config.solConf.defaultFunctionWeight == 7
+      assertBool "functionWeights should contain an explicit entry" $
+        Map.lookup (pack "Test.set0(int256)") config.solConf.functionWeights == Just 13
+  , testCase "defaultFunctionWeight must be positive" $
+      case Y.decodeEither' "defaultFunctionWeight: 0" of
+        Right (_ :: EConfigWithUsage) -> assertFailure "should not decode"
+        Left _ -> pure ()
+  , testCase "functionWeights must be positive" $
+      case Y.decodeEither' "functionWeights:\n  \"Test.set0(int256)\": 0\n" of
+        Right (_ :: EConfigWithUsage) -> assertFailure "should not decode"
+        Left _ -> pure ()
+  , testCase "parse fallbackRpcUrl and rpcTimeout" $
+      case Y.decodeEither' "rpcUrl: https://primary.example\nfallbackRpcUrl: https://fallback.example\nrpcTimeout: 30000\n" of
+        Right (cfg :: EConfigWithUsage) -> do
+          assertBool "fallbackRpcUrls should include the single fallbackRpcUrl" $
+            cfg.econfig.fallbackRpcUrls == ["https://fallback.example"]
+          assertBool "rpcTimeout should parse" $
+            cfg.econfig.rpcTimeout == Just 30000
+        Left err -> assertFailure $ "unexpected decoding error: " <> show err
+  , testCase "parse fallbackRpcUrls list and merge fallbackRpcUrl" $
+      case Y.decodeEither' "rpcUrl: https://primary.example\nfallbackRpcUrls:\n  - https://fallback-1.example\n  - https://fallback-2.example\nfallbackRpcUrl: https://fallback-3.example\n" of
+        Right (cfg :: EConfigWithUsage) ->
+          assertBool "fallbackRpcUrl should append to fallbackRpcUrls" $
+            cfg.econfig.fallbackRpcUrls ==
+              [ "https://fallback-1.example"
+              , "https://fallback-2.example"
+              , "https://fallback-3.example"
+              ]
+        Left err -> assertFailure $ "unexpected decoding error: " <> show err
   , testCase "parse saveEvery" $ do
       config <- (.econfig) <$> parseConfig "basic/save-every-test.yaml"
       assertBool "saveEvery should be 5" $ config.campaignConf.saveEvery == Just 5
@@ -78,6 +112,7 @@ configTests = testGroup "Configuration tests" $
           , "basic/default.yaml"
           , "basic/coverage-test.yaml"
           , "basic/corpus-fallback-test.yaml"
+          , "basic/function-weights.yaml"
           , "basic/show-shrinking-test.yaml"
           , "basic/save-every-test.yaml"
           ]

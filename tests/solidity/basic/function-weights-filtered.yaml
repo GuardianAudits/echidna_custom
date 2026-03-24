@@ -1,0 +1,5 @@
+filterFunctions: ["Test.set0(int256)"]
+filterBlacklist: true
+functionWeights:
+  "Test.set0(int256)": 9
+defaultFunctionWeight: 2

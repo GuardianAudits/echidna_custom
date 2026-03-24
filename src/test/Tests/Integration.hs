@@ -1,13 +1,36 @@
+{-# LANGUAGE LambdaCase #-}
+
 module Tests.Integration (integrationTests) where
 
+import Control.Exception (try)
+import Control.Monad (foldM, replicateM, void)
+import Control.Monad.Random.Strict (evalRandT)
+import Control.Monad.Reader (ReaderT, runReaderT)
 import Data.Functor ((<&>))
-import Data.Text (unpack)
+import Data.IORef (readIORef)
+import Data.List.NonEmpty (NonEmpty(..))
+import Data.Text (pack, unpack)
+import System.Random (mkStdGen)
 import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase)
 
 import EVM.ABI (AbiValue(..))
+import EVM.Types (VM, VMType(Concrete))
 
-import Common (testContract, testContractV, solcV, testContract', checkConstructorConditions, passed, solved, solvedLen, solvedWith, solvedWithout)
-import Echidna.Types.Tx (TxCall(..))
+import Common (testContract, testContractV, solcV, testContract', checkConstructorConditions, passed, solved, solvedLen, solvedWith, solvedWithout, overrideQuiet)
+import Echidna (prepareContract)
+import Echidna.ABI (emptyDict, genInteractionsM)
+import Echidna.Campaign (runWorker)
+import Echidna.Config (parseConfig)
+import Echidna.Exec (execTx)
+import Echidna.Solidity (compileContracts)
+import Echidna.Test (checkETest)
+import Echidna.Types.Campaign (CampaignConf(..))
+import Echidna.Types.Config (Env(..), EConfig(..), EConfigWithUsage(..))
+import Echidna.Types.Signature (ContractName, WeightedSignature(..))
+import Echidna.Types.Solidity (SolException(..))
+import Echidna.Types.Test (EchidnaTest(..), TestType(..), TestValue(..), didFail)
+import Echidna.Types.Tx (Tx(..), TxCall(..))
 import Echidna.Types.Worker (WorkerType(..))
 
 integrationTests :: TestTree
@@ -70,6 +93,15 @@ integrationTests = testGroup "Solidity Integration Testing"
   , testContract "basic/delay.sol"        Nothing
       [ ("echidna_block_number passed",            solved    "echidna_block_number")
       , ("echidna_timestamp passed",               solved    "echidna_timestamp") ]
+  , testCase "basic/shrink-revert-delay.sol" $ do
+      (vm, env, shrinkBugTest) <- prepareShrinkRevertDelay
+      assertBool "expected fuzz_withdraw assertion to be falsified" $ didFail shrinkBugTest
+
+      replayedVm <- flip runReaderT env $ foldM replay vm shrinkBugTest.reproducer
+      (replayedValue, _) <- flip runReaderT env $ checkETest shrinkBugTest replayedVm
+
+      assertBool ("expected stored reproducer to remain falsifying, got " ++ show replayedValue) $
+        replayedValue == BoolValue False
   , testContractV "basic/immutable.sol"    (Just (>= solcV (0,6,0))) Nothing
       [ ("echidna_test passed",                    solved      "echidna_test") ]
   , testContractV "basic/immutable-2.sol"    (Just (>= solcV (0,6,0))) Nothing
@@ -98,4 +130,87 @@ integrationTests = testGroup "Solidity Integration Testing"
       [ ("test passed",                    solved     "test") ]
   , testContractV "tstore/tstore.sol" (Just (>= solcV (0,8,25))) Nothing
       [ ("echidna_foo passed", solved "echidna_foo") ]
+  , testCase "functionWeights bias fresh function selection" $ do
+      let weightedSignatures =
+            WeightedSignature
+              { signature = ("heavy", [])
+              , qualifiedSignature = pack "Test.heavy()"
+              , weight = 20
+              }
+            :| [ WeightedSignature
+                   { signature = ("light", [])
+                   , qualifiedSignature = pack "Test.light()"
+                   , weight = 1
+                   }
+               ]
+      calls <- evalRandT (replicateM 256 (genInteractionsM emptyDict weightedSignatures)) (mkStdGen 7)
+      let heavyCount = length [() | ("heavy", _) <- calls]
+          lightCount = length [() | ("light", _) <- calls]
+      assertBool ("expected heavy calls to dominate, got " ++ show (heavyCount, lightCount)) $
+        heavyCount > lightCount
+  , testCase "functionWeights reject unknown signatures" $
+      assertPrepareContractFailure "basic/flags.sol" Nothing "basic/function-weights-unknown.yaml" $
+        \case
+          InvalidFunctionWeights [sig] -> sig == pack "Test.missing(int256)"
+          _ -> False
+  , testCase "functionWeights reject filtered signatures" $
+      assertPrepareContractFailure "basic/flags.sol" Nothing "basic/function-weights-filtered.yaml" $
+        \case
+          InvalidFunctionWeights [sig] -> sig == pack "Test.set0(int256)"
+          _ -> False
+  , testCase "functionWeights support allContracts mode" $
+      void $ prepareContractWithConfig "basic/allContracts.sol" (Just $ pack "B") "basic/allContracts-weighted.yaml"
   ]
+
+prepareContractWithConfig :: FilePath -> Maybe ContractName -> FilePath -> IO ()
+prepareContractWithConfig contractPath selectedContract configPath = do
+  cfg <- (.econfig) <$> parseConfig configPath
+  let cfg' = overrideQuiet cfg
+      contractPaths = contractPath :| []
+  (resolvedSolConf, buildOutput) <- compileContracts cfg'.solConf contractPaths
+  void $ prepareContract (cfg' { solConf = resolvedSolConf }) contractPaths buildOutput selectedContract 0
+
+assertPrepareContractFailure
+  :: FilePath
+  -> Maybe ContractName
+  -> FilePath
+  -> (SolException -> Bool)
+  -> IO ()
+assertPrepareContractFailure contractPath selectedContract configPath predicate = do
+  result <- try (prepareContractWithConfig contractPath selectedContract configPath) :: IO (Either SolException ())
+  case result of
+    Left err | predicate err -> pure ()
+             | otherwise -> assertFailure $ "unexpected failure: " ++ show err
+    Right _ -> assertFailure "expected contract preparation to fail"
+
+prepareShrinkRevertDelay :: IO (VM Concrete, Env, EchidnaTest)
+prepareShrinkRevertDelay = do
+  EConfigWithUsage cfg _ _ <- parseConfig "basic/shrink-revert-delay.yaml"
+  let cfg' = overrideQuiet cfg
+      contractPaths = "basic/shrink-revert-delay.sol" :| []
+
+  seed <- case cfg'.campaignConf.seed of
+    Just seed -> pure seed
+    Nothing -> assertFailure "missing seed in basic/shrink-revert-delay.yaml" >> fail "unreachable"
+
+  (resolvedSolConf, buildOutput) <- compileContracts cfg'.solConf contractPaths
+  let cfg'' = cfg' { solConf = resolvedSolConf }
+
+  (vm, env, dict) <- prepareContract cfg'' contractPaths buildOutput (Just $ pack "ShrinkBug") seed
+  void $ flip runReaderT env $
+    runWorker FuzzWorker (pure ()) vm dict 0 [] cfg''.campaignConf.testLimit (Just $ pack "ShrinkBug")
+
+  tests <- traverse readIORef env.testRefs
+  shrinkBugTest <- case filter isShrinkBugWithdraw tests of
+    [test] -> pure test
+    [] -> assertFailure "missing fuzz_withdraw assertion test" >> fail "unreachable"
+    _ -> assertFailure "multiple fuzz_withdraw assertion tests found" >> fail "unreachable"
+
+  pure (vm, env, shrinkBugTest)
+  where
+    isShrinkBugWithdraw EchidnaTest { testType = AssertionTest False (name, _) _ } =
+      name == pack "fuzz_withdraw"
+    isShrinkBugWithdraw _ = False
+
+replay :: VM Concrete -> Tx -> ReaderT Env IO (VM Concrete)
+replay vm tx = snd <$> execTx vm tx
