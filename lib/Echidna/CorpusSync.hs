@@ -6,7 +6,6 @@ module Echidna.CorpusSync
   ) where
 
 import Control.Concurrent (forkFinally, threadDelay)
-import Control.Concurrent.Chan (Chan, dupChan, readChan)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM (STM, atomically)
 import Control.Concurrent.STM.TBQueue
@@ -26,7 +25,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Numeric.Natural (Natural)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath ((</>), (<.>))
@@ -39,6 +38,7 @@ import Wuss qualified
 
 import EVM.Types hiding (Env, Origin, Failure)
 
+import Echidna.CoverageArtifacts (lookupCoverageTxs)
 import Echidna.CorpusSync.Hash (computeCampaignFingerprint, entryIdForTxs, sha256Hex)
 import Echidna.CorpusSync.Protocol
   ( Envelope(..)
@@ -60,6 +60,17 @@ import Echidna.CorpusSync.Protocol
   , FleetStop(..)
   , Origin(..)
   )
+import Echidna.EventBus (readEvent, subscribeEventBus)
+import Echidna.Recent
+  ( RecentMap
+  , deleteRecent
+  , emptyRecentMap
+  , insertRecent
+  , keysRecent
+  , lookupRecent
+  , pruneRecentBy
+  , sizeRecent
+  )
 import Echidna.Worker (getNWorkers)
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config
@@ -72,12 +83,14 @@ import Echidna.Types.Config
   , EConfig(..)
   , Env(..)
   )
-import Echidna.Types.Test (EchidnaTest(..), TestType(..), TestState(..))
+import Echidna.Types.Test (EchidnaTest(..), TestState(..))
 import Echidna.Types.Tx (Tx(..), TxCall(..))
 import Echidna.Types.Worker
   ( CampaignEvent(..)
+  , EventTest(..)
   , WorkerEvent(..)
   , WorkerType(..)
+  , eventTestCorpusName
   )
 import Echidna.Worker (pushCampaignEvent)
 
@@ -100,6 +113,17 @@ data Outbound
   | OutCorpusSinceRequest Int Int -- since_seq, limit
   | OutCorpusGet Text
   | OutFailurePublish Text Text EntryMeta [Tx] -- failure_id, test_name, repro meta, repro txs
+
+corpusSyncRecentIdLimit :: CorpusSyncConf -> Int
+corpusSyncRecentIdLimit CorpusSyncConf{ingest = CorpusSyncIngestConf{maxPending}} =
+  max 50000 (25 * maxPending)
+
+pendingGetTTLSeconds :: POSIXTime
+pendingGetTTLSeconds = 600
+
+prunePendingGets :: POSIXTime -> RecentMap Text POSIXTime -> RecentMap Text POSIXTime
+prunePendingGets now =
+  pruneRecentBy (\_ seenAt -> now - seenAt < pendingGetTTLSeconds)
 
 -- | Start distributed corpus sync (if enabled).
 --
@@ -127,9 +151,10 @@ startCorpusSync env vm selectedContract stopWorkers = do
       publishedFailureRef <- newIORef False
 
       -- Entry ID dedup and in-flight tracking.
-      knownIdsRef <- newIORef Set.empty
-      pendingGetsRef <- newIORef Set.empty
-      publishedIdsRef <- newIORef Set.empty
+      let recentIdLimit = corpusSyncRecentIdLimit csConf
+      knownIdsRef <- newIORef (emptyRecentMap recentIdLimit)
+      pendingGetsRef <- newIORef (emptyRecentMap recentIdLimit)
+      publishedIdsRef <- newIORef (emptyRecentMap recentIdLimit)
 
       -- Outbound queue is bounded to avoid stalling the campaign.
       let maxPending :: Natural
@@ -167,20 +192,19 @@ campaignEventLoop
   -> TBQueue Outbound
   -> Text -- ^ instance_id
   -> Text -- ^ campaign fingerprint
-  -> IORef (Set.Set Text) -- ^ published entry ids
+  -> IORef (RecentMap Text ()) -- ^ recently published entry ids
   -> IORef Bool -- ^ published failure
   -> IO ()
 campaignEventLoop env stopFlag outQ instanceId _campaign publishedIdsRef publishedFailureRef = do
   let nworkers = getNWorkers env.cfg.campaignConf
-  chan <- dupChan env.eventQueue
+  chan <- subscribeEventBus env.eventQueue
   loop chan nworkers
   where
-    loop :: Chan (a, CampaignEvent) -> Int -> IO ()
     loop _ 0 = writeIORef stopFlag True
     loop chan alive = do
       shouldStop <- readIORef stopFlag
       unless shouldStop $ do
-        (_ts, ev) <- readChan chan
+        (_ts, ev) <- readEvent chan
         case ev of
           WorkerEvent wid wtype wev -> do
             handleWorkerEvent wid wtype wev
@@ -191,43 +215,47 @@ campaignEventLoop env stopFlag outQ instanceId _campaign publishedIdsRef publish
 
     handleWorkerEvent wid wtype = \case
       NewCoverage{..} -> do
-        when env.cfg.corpusSyncConf.publish.coverage $ do
-          let txs = transactions
-          unless (null txs) $ do
-            let entryId = entryIdForTxs txs
-            shouldPublish <- atomicModifyIORef' publishedIdsRef $ \s ->
-              if Set.member entryId s then (s, False) else (Set.insert entryId s, True)
-            when shouldPublish $ do
-              let encodedTxs = encode txs
-                  bytesLen :: Int
-                  bytesLen = fromIntegral (LBS.length encodedTxs)
-                  maxBytes = env.cfg.corpusSyncConf.publish.maxEntryBytes
-              when (bytesLen <= maxBytes) $ do
-                let meta = EntryMeta
-                      { entryId = entryId
-                      , entryType = EntryCoverage
-                      , encoding = "json"
-                      , compressed = "none"
-                      , txCount = length txs
-                      , bytes = bytesLen
-                      , origin = Origin
-                          { instanceId = instanceId
-                          , workerId = Just wid
-                          , workerType = Just $ case wtype of
-                              FuzzWorker -> "fuzz"
-                              SymbolicWorker -> "symbolic"
+        when env.cfg.corpusSyncConf.publish.coverage $
+          lookupCoverageTxs env coverageEntryId >>= \case
+            Just txs ->
+              unless (null txs) $ do
+                let entryId = coverageEntryId
+                shouldPublish <- atomicModifyIORef' publishedIdsRef $ \recent ->
+                  case lookupRecent entryId recent of
+                    Just _ -> (recent, False)
+                    Nothing -> (insertRecent entryId () recent, True)
+                when shouldPublish $ do
+                  let encodedTxs = encode txs
+                      bytesLen :: Int
+                      bytesLen = fromIntegral (LBS.length encodedTxs)
+                      maxBytes = env.cfg.corpusSyncConf.publish.maxEntryBytes
+                  when (bytesLen <= maxBytes) $ do
+                    let meta = EntryMeta
+                          { entryId = entryId
+                          , entryType = EntryCoverage
+                          , encoding = "json"
+                          , compressed = "none"
+                          , txCount = length txs
+                          , bytes = bytesLen
+                          , origin = Origin
+                              { instanceId = instanceId
+                              , workerId = Just wid
+                              , workerType = Just $ case wtype of
+                                  FuzzWorker -> "fuzz"
+                                  SymbolicWorker -> "symbolic"
+                              }
+                          , hints = Just $ object
+                              [ "coverage_points_total" .= points
+                              , "num_codehashes" .= numCodehashes
+                              , "corpus_size" .= corpusSize
+                              ]
                           }
-                      , hints = Just $ object
-                          [ "coverage_points_total" .= points
-                          , "num_codehashes" .= numCodehashes
-                          , "corpus_size" .= corpusSize
-                          ]
-                      }
-                enqueueLowPriority outQ (OutCorpusPublish meta txs)
+                    enqueueLowPriority outQ (OutCorpusPublish meta txs)
+            Nothing ->
+              pure ()
 
-      TestFalsified test -> do
+      TestFalsified test@EventTest{reproducer = txs} -> do
         when env.cfg.corpusSyncConf.publish.failures $ do
-          let txs = test.reproducer
           unless (null txs) $ do
             let entryId = entryIdForTxs txs
             let encodedTxs = encode txs
@@ -235,7 +263,7 @@ campaignEventLoop env stopFlag outQ instanceId _campaign publishedIdsRef publish
                 bytesLen = fromIntegral (LBS.length encodedTxs)
                 maxBytes = env.cfg.corpusSyncConf.publish.maxEntryBytes
             when (bytesLen <= maxBytes) $ do
-              let testName = testNameText test
+              let testName = eventTestCorpusName test
                   failureId = sha256Hex (encode (testName <> ":" <> entryId))
                   meta = EntryMeta
                     { entryId = entryId
@@ -251,15 +279,6 @@ campaignEventLoop env stopFlag outQ instanceId _campaign publishedIdsRef publish
               enqueueHighPriority outQ (OutFailurePublish failureId testName meta txs)
 
       _ -> pure ()
-
-    testNameText :: EchidnaTest -> Text
-    testNameText EchidnaTest{testType} =
-      case testType of
-        PropertyTest n _ -> n
-        OptimizationTest n _ -> n
-        AssertionTest _ sig _ -> T.pack (show sig)
-        CallTest n _ -> n
-        Exploration -> "exploration"
 
     enqueueLowPriority q msg = do
       -- Drop if full.
@@ -280,8 +299,8 @@ connectionLoop
   -> IORef Bool
   -> IORef Int
   -> IORef Bool
-  -> IORef (Set.Set Text)
-  -> IORef (Set.Set Text)
+  -> IORef (RecentMap Text ())
+  -> IORef (RecentMap Text POSIXTime)
   -> TBQueue Outbound
   -> Text
   -> Text
@@ -359,8 +378,11 @@ connectionLoop env vm stopWorkers stopFlag lastSeqRef publishedFailureRef knownI
 
       -- If we reconnect mid-flight, re-request any entries that were pending.
       -- The hub is content-addressed so duplicate GETs are cheap and idempotent.
-      pending <- readIORef pendingGetsRef
-      forM_ (Set.toList pending) $ \eid ->
+      now <- getPOSIXTime
+      pending <- atomicModifyIORef' pendingGetsRef $ \recent ->
+        let pruned = prunePendingGets now recent
+        in (pruned, keysRecent pruned)
+      forM_ pending $ \eid ->
         atomically $ void $ tryWriteTBQueue outQ (OutCorpusGet eid)
 
       -- Spawn writer thread. Reader loop runs on this thread.
@@ -518,7 +540,8 @@ connectionLoop env vm stopWorkers stopFlag lastSeqRef publishedFailureRef knownI
             case parseEither parseJSON payload of
               Left _ -> pure ()
               Right CorpusEntry{..} -> do
-                atomicModifyIORef' pendingGetsRef (\s -> (Set.delete entryMeta.entryId s, ()))
+                atomicModifyIORef' pendingGetsRef $ \recent ->
+                  (deleteRecent entryMeta.entryId recent, ())
                 ingestEntry entryMeta txs
 
           "fleet_stop" -> do
@@ -541,6 +564,7 @@ connectionLoop env vm stopWorkers stopFlag lastSeqRef publishedFailureRef knownI
 
         handleAnnounce :: EntryMeta -> IO ()
         handleAnnounce meta = do
+          now <- getPOSIXTime
           let maxBytes = env.cfg.corpusSyncConf.publish.maxEntryBytes
               maxPending = max 1 env.cfg.corpusSyncConf.ingest.maxPending
           when (env.cfg.corpusSyncConf.ingest.enabled && meta.bytes <= maxBytes) $ do
@@ -550,13 +574,18 @@ connectionLoop env vm stopWorkers stopFlag lastSeqRef publishedFailureRef knownI
             when allowType $ do
               shouldIngest <- shouldIngestMeta env.cfg.corpusSyncConf.ingest instanceId meta
               when shouldIngest $ do
-                alreadyKnown <- atomicModifyIORef' knownIdsRef $ \s ->
-                  if Set.member meta.entryId s then (s, True) else (s, False)
+                alreadyKnown <- atomicModifyIORef' knownIdsRef $ \recent ->
+                  (recent, maybe False (const True) (lookupRecent meta.entryId recent))
                 unless alreadyKnown $ do
-                  pendingSz <- Set.size <$> readIORef pendingGetsRef
+                  pendingSz <- atomicModifyIORef' pendingGetsRef $ \recent ->
+                    let pruned = prunePendingGets now recent
+                    in (pruned, sizeRecent pruned)
                   when (meta.entryType == EntryReproducer || pendingSz < maxPending) $ do
-                    alreadyPending <- atomicModifyIORef' pendingGetsRef $ \s ->
-                      if Set.member meta.entryId s then (s, True) else (Set.insert meta.entryId s, False)
+                    alreadyPending <- atomicModifyIORef' pendingGetsRef $ \recent ->
+                      let pruned = prunePendingGets now recent
+                      in case lookupRecent meta.entryId pruned of
+                        Just _ -> (pruned, True)
+                        Nothing -> (insertRecent meta.entryId now pruned, False)
                     unless alreadyPending $ do
                       let msg = OutCorpusGet meta.entryId
                       case meta.entryType of
@@ -602,8 +631,10 @@ connectionLoop env vm stopWorkers stopFlag lastSeqRef publishedFailureRef knownI
             else do
               ok <- validateIngest env.cfg.corpusSyncConf.ingest.validate vm txs
               when ok $ do
-                inserted <- atomicModifyIORef' knownIdsRef $ \s ->
-                  if Set.member meta.entryId s then (s, False) else (Set.insert meta.entryId s, True)
+                inserted <- atomicModifyIORef' knownIdsRef $ \recent ->
+                  case lookupRecent meta.entryId recent of
+                    Just _ -> (recent, False)
+                    Nothing -> (insertRecent meta.entryId () recent, True)
                 when inserted $ do
                   admitToCorpus env meta txs
 
@@ -650,7 +681,7 @@ waitForShrinkThenStop env stopWorkers stopFlag = do
         shouldStop <- readIORef stopFlag
         unless shouldStop $ do
           tests <- traverse readIORef env.testRefs
-          let shrinking = any (\t -> case t.state of Large _ -> True; _ -> False) tests
+          let shrinking = any (\case EchidnaTest{state = Large _} -> True; _ -> False) tests
           if shrinking
             then threadDelay 250_000 >> loop
             else stopWorkers

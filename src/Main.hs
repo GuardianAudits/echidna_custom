@@ -30,7 +30,8 @@ import Paths_echidna (version)
 import System.Directory (createDirectoryIfMissing)
 import System.Exit (exitWith, exitSuccess, ExitCode(..))
 import System.FilePath ((</>), (<.>))
-import System.IO (hPutStrLn, stderr)
+import GHC.IO.Handle (hDuplicate, hDuplicateTo)
+import System.IO (BufferMode(LineBuffering), Handle, hFlush, hPutStrLn, hSetBuffering, stderr, stdout)
 import System.IO.CodePage (withCP65001)
 
 import EVM.Dapp (DappInfo(..))
@@ -63,6 +64,7 @@ main = withUtf8 $ withCP65001 $ do
   EConfigWithUsage loadedCfg ks _ <-
     maybe (pure (EConfigWithUsage defaultConfig mempty mempty)) parseConfig cliConfigFilepath
   cfg <- overrideConfig loadedCfg opts
+  mcpStdioHandle <- prepareMCPStdioHandle cfg
 
   (configuredSolConf, buildOutput) <- compileContracts cfg.solConf cliFilePath
   let cfgWithAutoLink = cfg { solConf = configuredSolConf }
@@ -76,7 +78,7 @@ main = withUtf8 $ withCP65001 $ do
   seed <- maybe (getRandomR (0, maxBound)) pure cfgWithAutoLink.campaignConf.seed
   let cfgWithSeed = cfgWithAutoLink { campaignConf = cfgWithAutoLink.campaignConf { seed = Just seed } }
   (vm, env, dict) <- prepareContract cfgWithSeed cliFilePath buildOutput cliSelectedContract seed
-  startMCPServer env
+  startMCPServer mcpStdioHandle env
 
   initialCorpus <- loadInitialCorpus env
   let periodicBaseDir = cfgWithAutoLink.campaignConf.coverageDir <|> cfgWithAutoLink.campaignConf.corpusDir
@@ -542,3 +544,15 @@ printProjectName :: Maybe Text -> IO ()
 printProjectName (Just name) = putStrLn $
     "This is Echidna " <> showVersion version <> " running on project `" <> T.unpack name <> "`"
 printProjectName Nothing = pure ()
+
+prepareMCPStdioHandle :: EConfig -> IO (Maybe Handle)
+prepareMCPStdioHandle cfg
+  | cfg.mcpConf.enabled && cfg.mcpConf.transport == MCPStdio = do
+      protocolOut <- hDuplicate stdout
+      hSetBuffering protocolOut LineBuffering
+      hFlush stdout
+      hDuplicateTo stderr stdout
+      hSetBuffering stdout LineBuffering
+      pure (Just protocolOut)
+  | otherwise =
+      pure Nothing

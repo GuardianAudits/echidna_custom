@@ -19,6 +19,7 @@ import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, mapMaybe)
 import Data.Sequence ((|>))
+import Data.Sequence qualified as Seq
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Time
@@ -53,7 +54,7 @@ import Echidna.Types.Worker
 import Echidna.UI.Report
 import Echidna.UI.Widgets
 import Echidna.Utility (timePrefix, getTimestamp)
-import Echidna.Worker (getNWorkers, workerIDToType)
+import Echidna.Worker (getNWorkers, pushCampaignEvent, workerIDToType)
 
 data UIEvent =
   CampaignUpdated LocalTime [EchidnaTest] [WorkerState]
@@ -300,8 +301,7 @@ ui vm dict initialCorpus cliSelectedContract = do
         , Handler $ \(e :: SomeException)  -> pure $ Crashed (show e)
         ]
 
-      time <- liftIO getTimestamp
-      writeChan env.eventQueue (time, WorkerEvent workerId workerType (WorkerStopped stopReason))
+      liftIO $ pushCampaignEvent env (WorkerEvent workerId workerType (WorkerStopped stopReason))
 
     pure (threadId, stateRef)
 
@@ -364,7 +364,7 @@ monitor = do
           state { fetchedContracts = contracts
                 , fetchedSlots = slots }
       AppEvent (EventReceived event@(time,campaignEvent)) -> do
-        modify' $ \state -> state { events = state.events |> event }
+        modify' $ \state -> state { events = appendUIEvent event state.events }
 
         case campaignEvent of
           WorkerEvent _ _ (NewCoverage { points, numCodehashes, corpusSize }) ->
@@ -434,6 +434,15 @@ monitor = do
              , appAttrMap = const attrs
              , appChooseCursor = neverShowCursor
              }
+
+uiEventLimit :: Int
+uiEventLimit = 5000
+
+appendUIEvent :: a -> Seq.Seq a -> Seq.Seq a
+appendUIEvent event events =
+  let events' = events |> event
+      overflow = Seq.length events' - uiEventLimit
+  in if overflow > 0 then Seq.drop overflow events' else events'
 
 -- | Heuristic check that we're in a sensible terminal (not a pipe)
 isTerminal :: IO Bool

@@ -1,6 +1,5 @@
 module Echidna where
 
-import Control.Concurrent (newChan)
 import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (newIORef)
@@ -25,8 +24,11 @@ import EVM.Solidity (BuildOutput(..), Contracts(Contracts), Method(..), Mutabili
 import EVM.Types hiding (Env)
 
 import Echidna.ABI
+import Echidna.CoverageArtifacts (coverageArtifactCacheLimit)
+import Echidna.EventBus (newEventBus)
 import Echidna.Onchain as Onchain
 import Echidna.Output.Corpus
+import Echidna.Recent (emptyRecentMap)
 import Echidna.Solidity
 import Echidna.SourceAnalysis.Slither
 import Echidna.SourceMapping (findSrcForReal)
@@ -125,10 +127,11 @@ mkEnv :: EConfig -> BuildOutput -> [EchidnaTest] -> World -> Maybe SlitherInfo -
 mkEnv cfg buildOutput tests world slitherInfo = do
   codehashMap <- newIORef mempty
   chainId <- Onchain.fetchChainIdFrom cfg.rpcUrl
-  eventQueue <- newChan
+  eventQueue <- newEventBus
   coverageRefInit <- newIORef mempty
   coverageRefRuntime <- newIORef mempty
   corpusRef <- newIORef mempty
+  coverageArtifacts <- newIORef (emptyRecentMap coverageArtifactCacheLimit)
   testRefs <- traverse newIORef tests
   fetchSession <- EVM.Fetch.mkSession cfg.campaignConf.corpusDir (fromIntegral <$> cfg.rpcBlock)
   contractNameCache <- newIORef mempty
@@ -150,7 +153,8 @@ mkEnv cfg buildOutput tests world slitherInfo = do
   -- TODO put in real path
   let dapp = dappInfo "/" buildOutput
   pure $ Env { cfg, dapp, codehashMap, fetchSession, contractNameCache
-             , chainId, eventQueue, coverageRefInit, coverageRefRuntime, corpusRef, testRefs, world
+             , chainId, eventQueue, coverageRefInit, coverageRefRuntime, corpusRef
+             , coverageArtifacts, testRefs, world
              , slitherInfo
              , mcpState
              }

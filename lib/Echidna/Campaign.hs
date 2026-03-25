@@ -35,7 +35,10 @@ import EVM.Solidity (SolcContract(..), Method(..))
 import EVM.Types hiding (Env, Frame(state), Gas)
 
 import Echidna.ABI
+import Echidna.CoverageArtifacts (cacheCoverageTxs, lookupCoverageTxs)
+import Echidna.CorpusSync.Hash (entryIdForTxs)
 import Echidna.Events (extractEventValues)
+import Echidna.EventBus (EventSubscription, readEvent, subscribeEventBus)
 import Echidna.Exec
 import Echidna.LogicalCoverage (emptyLogicalCoverage, updateLogicalCoverage)
 import Echidna.MCP (recordTx, recordLogicalCoverage, mcpCheckpoint, recordTestState)
@@ -122,7 +125,7 @@ runSymWorker callback vm dict workerId _ name = do
   cfg <- asks (.cfg)
   let nworkers = getNFuzzWorkers cfg.campaignConf -- getNFuzzWorkers, NOT getNWorkers
   eventQueue <- asks (.eventQueue)
-  chan <- liftIO $ dupChan eventQueue
+  chan <- liftIO $ subscribeEventBus eventQueue
 
   flip runStateT initialState $
     flip evalRandT (mkStdGen effectiveSeed) $ do -- unused but needed for callseq
@@ -152,10 +155,15 @@ runSymWorker callback vm dict workerId _ name = do
   -- We could pattern match on workerType here to ignore WorkerEvents from SymbolicWorkers,
   -- but it may be useful to symexec on top of symexec results to produce multi-transaction
   -- chains where each transaction results in new coverage.
-  listenerFunc (_, WorkerEvent _ _ (NewCoverage {transactions})) = do
-    void $ callseq vm transactions
-    symexecTxs False transactions
-    shrinkAndRandomlyExplore transactions (10 :: Int)
+  listenerFunc (_, WorkerEvent _ _ (NewCoverage {coverageEntryId})) = do
+    env <- ask
+    liftIO (lookupCoverageTxs env coverageEntryId) >>= \case
+      Just transactions -> do
+        void $ callseq vm transactions
+        symexecTxs False transactions
+        shrinkAndRandomlyExplore transactions (10 :: Int)
+      Nothing ->
+        pure ()
   listenerFunc _ = pure ()
 
   shrinkAndRandomlyExplore _ 0 = do
@@ -482,6 +490,7 @@ callseq vm txSeq = do
   newCoverage <- gets (.newCoverage)
   when newCoverage $ do
     ncallseqs <- gets (.ncallseqs)
+    let coverageTxs = fst <$> results
     -- Even if this takes a bit of time, this is okay as finding new coverage
     -- is expected to be infrequent in the long term
     newSize <- liftIO $ atomicModifyIORef' env.corpusRef $ \corp ->
@@ -490,10 +499,11 @@ callseq vm txSeq = do
       in (corp', corpusSize corp')
 
     (points, numCodehashes) <- liftIO $ coverageStats env.coverageRefInit env.coverageRefRuntime
+    liftIO $ cacheCoverageTxs env coverageTxs
     pushWorkerEvent NewCoverage { points
                                 , numCodehashes
                                 , corpusSize = newSize
-                                , transactions = fst <$> results
+                                , coverageEntryId = entryIdForTxs coverageTxs
                                 }
 
   modify' $ \workerState ->
@@ -684,7 +694,7 @@ updateOpenTest vm reproducer test = do
                            , result
                            , workerId
                            }
-          pushWorkerEvent (TestFalsified test')
+          pushWorkerEvent (TestFalsified (mkEventTest test'))
           pure $ Just test'
 
         IntValue value' | value' > value -> do
@@ -693,7 +703,7 @@ updateOpenTest vm reproducer test = do
                            , vm = Just vm
                            , result
                            }
-          pushWorkerEvent (TestOptimized test')
+          pushWorkerEvent (TestOptimized (mkEventTest test'))
           pure $ Just test'
           where
           value =
@@ -726,7 +736,7 @@ spawnListener handler = do
   cfg <- asks (.cfg)
   let nworkers = getNWorkers cfg.campaignConf
   eventQueue <- asks (.eventQueue)
-  chan <- liftIO $ dupChan eventQueue
+  chan <- liftIO $ subscribeEventBus eventQueue
   stopVar <- liftIO newEmptyMVar
   env <- ask
   let handler' ev = liftIO (handler ev)
@@ -739,7 +749,7 @@ listenerLoop
   :: (MonadReader Env m, MonadIO m)
   => ((LocalTime, CampaignEvent) -> m ())
   -- ^ a function that handles the events
-  -> Chan (LocalTime, CampaignEvent)
+  -> EventSubscription (LocalTime, CampaignEvent)
   -- ^ event channel
   -> Int
   -- ^ number of workers which have to stop before loop exits
@@ -749,7 +759,7 @@ listenerLoop handler chan !workersAlive =
     env <- ask
     shouldStop <- liftIO $ mcpCheckpoint env
     unless shouldStop $ do
-      event <- liftIO $ readChan chan
+      event <- liftIO $ readEvent chan
       handler event
       case event of
         (_, WorkerEvent _ _ (WorkerStopped _)) -> listenerLoop handler chan (workersAlive - 1)

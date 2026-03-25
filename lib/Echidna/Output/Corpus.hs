@@ -11,9 +11,9 @@ import Data.Time (LocalTime)
 import System.Directory (createDirectoryIfMissing, makeRelativeToCurrentDirectory, doesFileExist)
 import System.FilePath ((</>), (<.>))
 
+import Echidna.CoverageArtifacts (lookupCoverageTxs)
 import Echidna.Types.Campaign
 import Echidna.Types.Config
-import Echidna.Types.Test (EchidnaTest(..))
 import Echidna.Types.Tx (Tx)
 import Echidna.Types.Worker
 import Echidna.Utility (listDirectory, withCurrentDirectory)
@@ -46,18 +46,15 @@ saveCorpusEvent env (_time, campaignEvent) = do
     Nothing -> pure ()
   where
     saveEvent dir (WorkerEvent _workerId _workerType event) =
-      maybe (pure ()) (saveFile dir) $ getEventInfo event
+      case event of
+        TestFalsified test -> saveFile dir ("reproducers-unshrunk", test.reproducer)
+        TestOptimized test -> saveFile dir ("reproducers-optimizations", test.reproducer)
+        NewCoverage { coverageEntryId } ->
+          lookupCoverageTxs env coverageEntryId >>= \case
+            Just txs -> saveFile dir ("coverage", txs)
+            Nothing -> pure ()
+        _ -> pure ()
     saveEvent _ _ = pure ()
-
-    getEventInfo = \case
-      -- TODO: We save intermediate reproducers in separate directories.
-      -- This is because there can be a lot of them and we want to skip
-      -- loading those on startup. Ideally, we should override the same file
-      -- with a better version of a reproducer, this is smaller or more optimized.
-      TestFalsified test -> Just ("reproducers-unshrunk", test.reproducer)
-      TestOptimized test -> Just ("reproducers-optimizations", test.reproducer)
-      NewCoverage { transactions } -> Just ("coverage", transactions)
-      _ -> Nothing
 
     saveFile dir (subdir, txs) =
       unless (null txs) $

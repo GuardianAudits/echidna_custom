@@ -1,15 +1,13 @@
 module Echidna.Worker where
 
-import Control.Concurrent
 import Control.Monad.Reader (MonadReader, MonadIO, liftIO, ask)
 import Control.Monad.State.Strict(MonadState(..), gets)
 import Data.Aeson
 import Data.Text (unpack)
 
-import Echidna.ABI (encodeSig)
+import Echidna.EventBus (publishEvent)
 import Echidna.Types.Campaign
 import Echidna.Types.Config (Env(..), EConfig(..))
-import Echidna.Types.Test
 import Echidna.Types.Worker
 import Echidna.Utility (getTimestamp)
 
@@ -46,8 +44,8 @@ pushWorkerEvent event = do
 
 pushCampaignEvent :: Env -> CampaignEvent -> IO ()
 pushCampaignEvent env event = do
-  time <- liftIO getTimestamp
-  writeChan env.eventQueue (time, event)
+  time <- getTimestamp
+  publishEvent env.eventQueue (time, event)
 
 ppCampaignEvent :: CampaignEvent -> String
 ppCampaignEvent = \case
@@ -58,10 +56,9 @@ ppCampaignEvent = \case
 ppWorkerEvent :: WorkerEvent -> String
 ppWorkerEvent = \case
   TestFalsified test ->
-    "Test " <> unpack (showTest test) <> " falsified!"
+    "Test " <> unpack (eventTestName test) <> " falsified!"
   TestOptimized test ->
-    let name = case test.testType of OptimizationTest n _ -> n; _ -> error "fixme"
-    in "New maximum value of " <> unpack name <> ": " <> show test.value
+    "New maximum value of " <> unpack (eventTestName test) <> ": " <> show test.value
   NewCoverage { points, numCodehashes, corpusSize } ->
     "New coverage: " <> show points <> " instr, "
       <> show numCodehashes <> " contracts, "
@@ -92,9 +89,3 @@ ppWorkerEvent = \case
     "Crashed:\n\n" <>
     e <>
     "\n\nPlease report it to https://github.com/crytic/echidna/issues"
-  where
-    showTest test = case test.testType of
-      PropertyTest n _ -> n
-      AssertionTest _ n _ -> encodeSig n
-      CallTest n _ -> n
-      _ -> error "impossible"

@@ -13,33 +13,37 @@ module Echidna.MCP
   ) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.Chan (dupChan, readChan)
+import Control.Exception (IOException, catch)
 import Control.Monad (forever, forM_, unless)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Control.Monad.Reader (MonadReader, ask)
-import Data.Aeson (FromJSON(..), Value(..), object, (.=), encode, eitherDecode, withObject, (.:), (.:?), toJSON)
+import Data.Aeson (FromJSON(..), Result(..), Value(..), object, (.=), encode, eitherDecode, eitherDecodeStrict', withObject, (.:), (.:?), toJSON, fromJSON)
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
+import Data.ByteString.Lazy.Char8 qualified as LBS8
 import Data.ByteString qualified as BS
 import Data.ByteString.Base16 qualified as BS16
-import Data.IORef (atomicModifyIORef', readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.List (sortOn)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time (LocalTime, UTCTime, getCurrentTime)
 import Data.Time.Clock (addUTCTime, diffUTCTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
+import Data.Version (showVersion)
 import Data.String (fromString)
 import Data.Ord (Down(..))
-import System.IO (hPutStrLn, stderr)
-import Network.HTTP.Types (status200, status400, status404)
-import Network.Wai (Application, pathInfo, requestMethod, responseLBS, strictRequestBody, Response, ResponseReceived)
+import System.IO (Handle, hFlush, hIsEOF, hPutStrLn, stdin, stderr)
+import Network.HTTP.Types (status200, status202, status400, status404)
+import Network.Wai (Application, pathInfo, requestMethod, responseLBS, strictRequestBody)
 import Network.Wai.Handler.Warp (runSettings, setHost, setPort, defaultSettings)
+import Paths_echidna (version)
 import Text.Read (readMaybe)
 
 import EVM.Format (showTraceTree)
@@ -55,6 +59,7 @@ import Echidna.ABI (encodeSigWithName, encodeSig, ppAbiValue, signatureCall)
 import Echidna.ContractName (contractNameForAddr)
 import Echidna.LogicalCoverage (mergeLogicalCoverage)
 import Echidna.Events (decodeRevertMsg)
+import Echidna.EventBus (readEvent, subscribeEventBus)
 import Echidna.MCP.Store
 import Echidna.MCP.Types
   ( MCPEvent(..)
@@ -86,25 +91,78 @@ import Echidna.LogicalCoverage.Types (LogicalCoverage)
 import Echidna.Utility (getTimestamp)
 import EVM.Dapp (DappInfo(..))
 
+data MCPLifecycleState
+  = AwaitingInitialize
+  | AwaitingInitialized !Text
+  | Ready !Text
+
+data RPCMessage = RPCMessage
+  { jsonrpc :: Text
+  , method  :: Maybe Text
+  , params  :: Maybe Value
+  , reqId   :: Maybe Value
+  , result  :: Maybe Value
+  , errorObj :: Maybe Value
+  }
+
+instance FromJSON RPCMessage where
+  parseJSON = withObject "RPCMessage" $ \o ->
+    RPCMessage <$> o .: "jsonrpc"
+               <*> o .:? "method"
+               <*> o .:? "params"
+               <*> o .:? "id"
+               <*> o .:? "result"
+               <*> o .:? "error"
+
+data InitializeParams = InitializeParams
+  { protocolVersion :: Text
+  }
+
+instance FromJSON InitializeParams where
+  parseJSON = withObject "InitializeParams" $ \o ->
+    InitializeParams <$> o .: "protocolVersion"
+
+supportedProtocolVersions :: [Text]
+supportedProtocolVersions =
+  [ "2025-11-25"
+  , "2025-06-18"
+  , "2025-03-26"
+  ]
+
+latestProtocolVersion :: Text
+latestProtocolVersion =
+  case supportedProtocolVersions of
+    versionText : _ -> versionText
+    [] -> "2025-11-25"
+
 -- | Start MCP server if enabled.
-startMCPServer :: Env -> IO ()
-startMCPServer env@Env{mcpState, eventQueue, cfg} =
+startMCPServer :: Maybe Handle -> Env -> IO ()
+startMCPServer stdioHandle env@Env{mcpState, eventQueue, cfg} =
   case mcpState of
     Nothing -> pure ()
     Just st -> do
       let EConfig{mcpConf = MCPConf{transport, host, port}} = cfg
+      lifecycleRef <- newIORef AwaitingInitialize
       -- listener for campaign events
-      chan <- dupChan eventQueue
+      chan <- subscribeEventBus eventQueue
       _ <- forkIO $ forever $ do
-        (ts, ev) <- readChan chan
+        (ts, ev) <- readEvent chan
         recordEvent st ts ev
       -- start transport
       case transport of
         MCPHttp -> do
           let hostStr = T.unpack host
               settings = setHost (fromString hostStr) $ setPort port defaultSettings
-          _ <- forkIO $ runSettings settings (mcpApp env st)
+          _ <- forkIO $ runSettings settings (mcpApp lifecycleRef env st)
           pure ()
+        MCPStdio -> do
+          case stdioHandle of
+            Just handle -> do
+              _ <- forkIO $ runMCPStdioServer lifecycleRef handle env st
+              pure ()
+            Nothing -> do
+              hPutStrLn stderr "MCP stdio transport requested but no stdio protocol handle was initialized"
+              writeIORef st.phase "disabled"
         other -> do
           hPutStrLn stderr $ "MCP transport not supported: " <> show other <> " (server disabled)"
           writeIORef st.phase "disabled"
@@ -203,8 +261,8 @@ recordTx st vm tx result = do
       pure ()
 
 -- | MCP HTTP application.
-mcpApp :: Env -> MCPState -> Application
-mcpApp env st req respond = do
+mcpApp :: IORef MCPLifecycleState -> Env -> MCPState -> Application
+mcpApp lifecycleRef env st req respond = do
   case (requestMethod req, pathInfo req) of
     ("GET", []) ->
       respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] mcpDashboardHtml
@@ -216,35 +274,152 @@ mcpApp env st req respond = do
       body <- strictRequestBody req
       case eitherDecode body of
         Left err -> respond $ responseLBS status400 [("Content-Type", "application/json")] (encode $ mcpError Null (-32700) (T.pack err))
-        Right rpc -> handleRPC env st rpc respond
+        Right rpc ->
+          handleMessage lifecycleRef env st rpc >>= \case
+            Nothing ->
+              respond $ responseLBS status202 [] mempty
+            Just response ->
+              respond $ responseLBS status200 [("Content-Type", "application/json")] (encode response)
     _ ->
       respond $ responseLBS status404 [("Content-Type", "text/plain")] "not found"
 
-data RPCRequest = RPCRequest
-  { jsonrpc :: Text
-  , method  :: Text
-  , params  :: Maybe Value
-  , reqId   :: Value
-  }
+runMCPStdioServer :: IORef MCPLifecycleState -> Handle -> Env -> MCPState -> IO ()
+runMCPStdioServer lifecycleRef outHandle env st =
+  loop `catch` \(_ :: IOException) -> requestStopMCP st
+  where
+    loop = do
+      eof <- hIsEOF stdin
+      if eof then
+        requestStopMCP st
+      else do
+        line <- BS8.hGetLine stdin
+        if BS8.all (`elem` [' ', '\t', '\r']) line then
+          loop
+        else do
+          case eitherDecodeStrict' line of
+            Left err ->
+              writeResponse outHandle (mcpError Null (-32700) (T.pack err))
+            Right message ->
+              handleMessage lifecycleRef env st message >>= mapM_ (writeResponse outHandle)
+          loop
 
-instance FromJSON RPCRequest where
-  parseJSON = withObject "RPCRequest" $ \o ->
-    RPCRequest <$> o .: "jsonrpc"
-               <*> o .: "method"
-               <*> o .:? "params"
-               <*> o .: "id"
+writeResponse :: Handle -> Value -> IO ()
+writeResponse handle response = do
+  LBS8.hPutStrLn handle (encode response)
+  hFlush handle
 
-handleRPC :: Env -> MCPState -> RPCRequest -> (Response -> IO ResponseReceived) -> IO ResponseReceived
-handleRPC env st RPCRequest{..} respond = do
-  result <- case method of
-    "resources/list" -> pure $ Right (resourcesListResult)
-    "resources/read" -> resourcesReadResult env st params
-    "tools/list" -> pure $ Right toolsListResult
-    "tools/call" -> toolsCallResult env st params
-    _ -> pure $ Left $ mcpError reqId (-32601) "Method not found"
-  case result of
-    Left err -> respond $ responseLBS status200 [("Content-Type", "application/json")] (encode err)
-    Right res -> respond $ responseLBS status200 [("Content-Type", "application/json")] (encode $ mcpResult reqId res)
+handleMessage :: IORef MCPLifecycleState -> Env -> MCPState -> RPCMessage -> IO (Maybe Value)
+handleMessage lifecycleRef env st message
+  | message.jsonrpc /= "2.0" =
+      pure $ Just $ mcpError (fromMaybe Null message.reqId) (-32600) "Invalid Request"
+  | Just methodName <- message.method =
+      handleMethod lifecycleRef env st message.reqId methodName message.params
+  | isJust message.result || isJust message.errorObj =
+      pure Nothing
+  | otherwise =
+      pure $ Just $ mcpError (fromMaybe Null message.reqId) (-32600) "Invalid Request"
+
+handleMethod :: IORef MCPLifecycleState -> Env -> MCPState -> Maybe Value -> Text -> Maybe Value -> IO (Maybe Value)
+handleMethod lifecycleRef env st maybeId methodName paramsVal =
+  case methodName of
+    "initialize" ->
+      pure . Just =<< handleInitialize lifecycleRef maybeId paramsVal
+    "notifications/initialized" -> do
+      markInitialized lifecycleRef
+      pure Nothing
+    "initialized" -> do
+      markInitialized lifecycleRef
+      pure Nothing
+    "ping" ->
+      pure $ (`mcpResult` object []) <$> maybeId
+    "notifications/cancelled" ->
+      pure Nothing
+    _ -> do
+      ready <- isReady lifecycleRef
+      if not ready then
+        pure $ Just $ mcpError (fromMaybe Null maybeId) (-32002) "Server not initialized"
+      else
+        pure . Just =<< handleReadyRequest env st maybeId methodName paramsVal
+
+handleInitialize :: IORef MCPLifecycleState -> Maybe Value -> Maybe Value -> IO Value
+handleInitialize lifecycleRef maybeId paramsVal =
+  case maybeId of
+    Nothing ->
+      pure $ mcpError Null (-32600) "initialize must be sent as a request"
+    Just rid -> do
+      state <- readIORef lifecycleRef
+      case state of
+        AwaitingInitialize ->
+          case maybe (Left "Missing initialize params") parseInitializeParams paramsVal of
+            Left err ->
+              pure $ mcpError rid (-32602) err
+            Right initParams -> do
+              let negotiatedVersion = negotiateProtocolVersion initParams.protocolVersion
+              writeIORef lifecycleRef (AwaitingInitialized negotiatedVersion)
+              pure $ mcpResult rid (initializeResult negotiatedVersion)
+        _ ->
+          pure $ mcpError rid (-32600) "MCP session already initialized"
+
+handleReadyRequest :: Env -> MCPState -> Maybe Value -> Text -> Maybe Value -> IO Value
+handleReadyRequest env st maybeId methodName paramsVal =
+  let rid = fromMaybe Null maybeId
+  in case methodName of
+    "resources/list" -> pure $ mcpResult rid resourcesListResult
+    "resources/read" -> do
+      resourcesReadResult env st paramsVal >>= pure . either id (mcpResult rid)
+    "tools/list" -> pure $ mcpResult rid toolsListResult
+    "tools/call" -> do
+      toolsCallResult env st paramsVal >>= pure . either id (mcpResult rid)
+    _ -> pure $ mcpError rid (-32601) "Method not found"
+
+parseInitializeParams :: Value -> Either Text InitializeParams
+parseInitializeParams value =
+  case fromJSON value of
+    Success params -> Right params
+    Error err -> Left (T.pack err)
+
+negotiateProtocolVersion :: Text -> Text
+negotiateProtocolVersion requestedVersion
+  | requestedVersion `elem` supportedProtocolVersions = requestedVersion
+  | otherwise = latestProtocolVersion
+
+initializeResult :: Text -> Value
+initializeResult negotiatedVersion =
+  object
+    [ "protocolVersion" .= negotiatedVersion
+    , "capabilities" .= serverCapabilities
+    , "serverInfo" .= serverInfo
+    , "instructions" .= ("Inspect the active Echidna run via resources and tools. Control operations are limited to pause, resume, and stop." :: Text)
+    ]
+
+serverCapabilities :: Value
+serverCapabilities =
+  object
+    [ "resources" .= object []
+    , "tools" .= object []
+    ]
+
+serverInfo :: Value
+serverInfo =
+  object
+    [ "name" .= ("echidna" :: Text)
+    , "title" .= ("Echidna" :: Text)
+    , "version" .= T.pack (showVersion version)
+    ]
+
+markInitialized :: IORef MCPLifecycleState -> IO ()
+markInitialized lifecycleRef =
+  atomicModifyIORef' lifecycleRef $ \state ->
+    case state of
+      AwaitingInitialized negotiatedVersion -> (Ready negotiatedVersion, ())
+      other -> (other, ())
+
+isReady :: IORef MCPLifecycleState -> IO Bool
+isReady lifecycleRef = do
+  state <- readIORef lifecycleRef
+  pure $ case state of
+    Ready _ -> True
+    _ -> False
 
 resourcesListResult :: Value
 resourcesListResult = object

@@ -1,6 +1,5 @@
 module Echidna.Types.Config where
 
-import Control.Concurrent (Chan)
 import Data.Aeson (FromJSON(..), withText)
 import Data.Aeson.Key (Key)
 import Data.IORef (IORef)
@@ -16,13 +15,15 @@ import EVM.Types (Addr, W256)
 
 import Echidna.SourceAnalysis.Slither (SlitherInfo)
 import Echidna.SourceMapping (CodehashMap)
+import Echidna.EventBus (EventBus)
+import Echidna.Recent (RecentMap)
 import Echidna.Types.Cache
 import Echidna.Types.Campaign (CampaignConf)
 import Echidna.Types.Corpus (Corpus)
 import Echidna.Types.Coverage (CoverageMap)
 import Echidna.Types.Solidity (SolConf)
 import Echidna.Types.Test (TestConf, EchidnaTest)
-import Echidna.Types.Tx (TxConf)
+import Echidna.Types.Tx (TxConf, Tx)
 import Echidna.Types.Worker (CampaignEvent)
 import Echidna.Types.World (World)
 import Echidna.MCP.Store (MCPState)
@@ -238,14 +239,14 @@ data Env = Env
   { cfg :: EConfig
   , dapp :: DappInfo
 
-  -- | Shared between all workers. Events are fairly rare so contention is
-  -- minimal.
-  , eventQueue :: Chan (LocalTime, CampaignEvent)
+  -- | Shared event bus with broadcast semantics and no unread root queue.
+  , eventQueue :: EventBus (LocalTime, CampaignEvent)
 
   , testRefs :: [IORef EchidnaTest]
   , coverageRefInit :: IORef CoverageMap
   , coverageRefRuntime :: IORef CoverageMap
   , corpusRef :: IORef Corpus
+  , coverageArtifacts :: IORef (RecentMap Text [Tx])
 
   , slitherInfo :: Maybe SlitherInfo
   , codehashMap :: CodehashMap

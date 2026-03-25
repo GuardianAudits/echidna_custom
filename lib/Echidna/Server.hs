@@ -11,6 +11,7 @@ import Network.Wai.EventSource (ServerEvent(..), eventSourceAppIO)
 import Network.Wai.Handler.Warp (run)
 import UnliftIO.STM (atomically, newBroadcastTChanIO, writeTChan, dupTChan, readTChan)
 
+import Echidna.EventBus (readEvent, subscribeEventBus)
 import Echidna.Types.Config (Env(..))
 import Echidna.Types.Worker
 import Echidna.Worker()
@@ -40,11 +41,11 @@ instance ToJSON SSE where
 runSSEServer :: MVar () -> Env -> Word16 -> Int -> IO ()
 runSSEServer serverStopVar env port nworkers = do
   aliveRef <- newIORef nworkers
-  sseChan <- dupChan env.eventQueue
+  sseChan <- subscribeEventBus env.eventQueue
   broadcastChan <- newBroadcastTChanIO
 
   void . forkIO . forever $ do
-    event@(_, campaignEvent) <- readChan sseChan
+    event@(_, campaignEvent) <- readEvent sseChan
     let eventName = \case
           WorkerEvent _ _ workerEvent ->
             case workerEvent of

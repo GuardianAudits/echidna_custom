@@ -3,7 +3,7 @@ name: echidna
 author: Trail of Bits <echidna-dev@trailofbits.com>
 maintainer: Trail of Bits <echidna-dev@trailofbits.com>
 
-version: 4.0
+version: 4.1
 
 ghc-options:
   - -O2
@@ -46,6 +46,9 @@ default-extensions:
 library:
   source-dirs: lib/
   other-modules:
+    - Echidna.CoverageArtifacts
+    - Echidna.EventBus
+    - Echidna.Recent
     - Echidna.Solidity.LinkedLibraries
     - Paths_echidna
   dependencies:
