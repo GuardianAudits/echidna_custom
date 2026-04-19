@@ -554,18 +554,42 @@ readResource env st uri = do
     _ -> pure (object ["error" .= ("unknown resource" :: Text)])
 
 runStatus :: Env -> MCPState -> IO Value
-runStatus Env{coverageRefInit, coverageRefRuntime, corpusRef} st = do
+runStatus Env{coverageRefInit, coverageRefRuntime, corpusRef, testRefs} st = do
   counters <- readIORef st.counters
   phase <- readIORef st.phase
   (points, codehashes) <- coverageStats coverageRefInit coverageRefRuntime
   corpus <- readIORef corpusRef
+  tests <- traverse readIORef testRefs
+  now <- getCurrentTime
+  let totalTests = length tests
+      failedTests = length (filter (isBrokenTest . (.state)) tests)
+      runs = counters.totalCalls
+      elapsedMs = floor (diffUTCTime now st.startedAt * 1000) :: Int
   pure $ object
     [ "phase" .= phase
     , "counters" .= counters
     , "coveragePoints" .= points
     , "uniqueCodehashes" .= codehashes
     , "corpusSize" .= length corpus
+    , "runs" .= runs
+    , "tests" .= object
+        [ "total" .= totalTests
+        , "failed" .= failedTests
+        ]
+    , "corpus" .= object
+        [ "size" .= length corpus
+        ]
+    , "elapsedMs" .= elapsedMs
     ]
+
+-- | A test is "broken" (invariant falsified) if it's Solved, currently
+-- shrinking (Large), or crashed (Failed). Open/Passed/Unsolvable are not.
+isBrokenTest :: TestState -> Bool
+isBrokenTest = \case
+  Solved -> True
+  Large _ -> True
+  Failed _ -> True
+  _ -> False
 
 runConfig :: Env -> IO Value
 runConfig Env{cfg = EConfig{campaignConf = c}} = do

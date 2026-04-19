@@ -16,6 +16,7 @@ This document summarizes **all custom changes** applied so far in this repo + it
 It also tracks custom Echidna runtime features added in this branch:
 - `showShrinkingEvery` (realtime shrinking progress in text mode)
 - `saveEvery` (periodic coverage snapshots during campaign execution)
+- `get_status` MCP tool extended with top-level `runs`, `tests.{total,failed}`, `corpus.size`, and `elapsedMs` for polling-based orchestrators that need a single scalar for run progress (previously only nested `counters.totalCalls` was exposed).
 
 ---
 
