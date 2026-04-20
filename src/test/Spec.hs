@@ -11,6 +11,7 @@ import Tests.Encoding (encodingJSONTests)
 import Tests.FoundryTestGen (foundryTestGenTests)
 import Tests.Integration (integrationTests)
 import Tests.LinkedLibraries (linkedLibrariesTests)
+import Tests.MCP (mcpTests)
 import Tests.Optimization (optimizationTests)
 import Tests.Overflow (overflowTests)
 import Tests.PeriodicSave (periodicSaveTests)
@@ -38,6 +39,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , encodingJSONTests
            , foundryTestGenTests
            , linkedLibrariesTests
+           , mcpTests
            , cheatTests
            , symbolicTests
            , periodicSaveTests
