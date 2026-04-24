@@ -1165,7 +1165,7 @@ purgeExpiredReproducers st purgeNow =
             jobs' = Map.filterWithKey (\_ job -> Map.notMember job.testKey staleSet) jobs
         in (jobs', ())
   where
-    isExpired ts artifact = ts > addUTCTime (fromIntegral $ st.reproducerResultTTLMinutes * 60 * (-1)) artifact.updatedAt
+    isExpired ts artifact = ts > addUTCTime (fromIntegral $ st.reproducerResultTTLMinutes * 60) artifact.updatedAt
 
 getReproducerArtifact :: MCPState -> UTCTime -> Text -> IO ReproducerLookup
 getReproducerArtifact st now key = do
@@ -1179,7 +1179,7 @@ getReproducerArtifact st now key = do
   where
     isExpired ts artifact
       | st.reproducerResultTTLMinutes <= 0 = False
-      | otherwise = addUTCTime (fromIntegral (st.reproducerResultTTLMinutes * 60 * (-1)) ) artifact.updatedAt < ts
+      | otherwise = addUTCTime (fromIntegral (st.reproducerResultTTLMinutes * 60)) artifact.updatedAt < ts
 
 emitReproducerEvent :: MCPState -> Text -> Text -> Value -> IO ()
 emitReproducerEvent st etype key payload = do

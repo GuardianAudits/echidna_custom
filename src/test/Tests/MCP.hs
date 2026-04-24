@@ -5,20 +5,23 @@ import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Function ((&))
 import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Word (Word64)
+import EVM.Types (Addr(..))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 import Common (loadSolTests, overrideQuiet)
 import Echidna.Config (defaultConfig)
-import Echidna.MCP (runStatus)
-import Echidna.MCP.Store (MCPState(..))
+import Echidna.MCP (recordTestState, runStatus)
+import Echidna.MCP.Store (MCPState(..), newMCPState)
 import Echidna.MCP.Types (MCPRunCounters(..))
 import Echidna.Solidity (compileContracts)
+import Echidna.Test (createTest)
 import Echidna.Types.Config (EConfig(..), Env(..), MCPConf(..))
-import Echidna.Types.Test (EchidnaTest(..), TestState(..))
+import Echidna.Types.Test (EchidnaTest(..), TestState(..), TestType(..))
 
 mcpTests :: TestTree
 mcpTests =
@@ -69,7 +72,21 @@ mcpTests =
         assertEqual "elapsedMs first poll" (1500 :: Int) elapsed1
         assertEqual "elapsedMs second poll" (3000 :: Int) elapsed2
         assertBool "elapsedMs should increase with the monotonic clock" (elapsed2 > elapsed1)
+    , testCase "fresh reproducer artifacts are not purged before the TTL" $ do
+        st <- newMCPState 10 10 10 10 10 10 120 256000 False "campaign"
+        let test0 = solvedProperty "echidna_first" 0x100
+            test1 = solvedProperty "echidna_second" 0x200
+
+        recordTestState st 0 test0
+        recordTestState st 1 test1
+
+        artifacts <- readIORef st.reproducerArtifacts
+        assertEqual "fresh artifacts retained" (2 :: Int) (Map.size artifacts)
     ]
+
+solvedProperty :: Text -> Addr -> EchidnaTest
+solvedProperty name addr =
+  (createTest (PropertyTest name addr)) { state = Solved }
 
 field :: Text -> Value -> IO Value
 field name (Object obj) =
