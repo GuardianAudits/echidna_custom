@@ -1,4 +1,10 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE StrictData #-}
+-- StrictData ensures every field of MCP record types is strict. Without it,
+-- lazy Int counters and lazy Text/Value payloads built via atomicModifyIORef'
+-- in recordTx/recordEvent (per fuzz iteration) accumulate thunks that pin
+-- upstream VM/dapp references and cause unbounded RSS growth — observed as a
+-- ~140 MB/s leak that OOMs at the cgroup cap on Linux.
 
 module Echidna.MCP.Types
   ( MCPEvent(..)

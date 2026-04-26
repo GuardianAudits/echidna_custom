@@ -242,7 +242,11 @@ recordTx st vm tx result = do
       let selector = case tx.call of
             SolCall solCall -> Just (encodeSig (signatureCall solCall))
             _ -> Nothing
-      let traceText = showTraceTree dapp vm
+      -- Force trace text now so the stored MCPTrace.trace Text no longer
+      -- closes over `dapp` and `vm`. Without this bang, the thunk in the
+      -- bounded ring still pins the entire VM snapshot at revert time and
+      -- 1000 retained entries × VM-with-fork-cache is the dominant leak.
+      let !traceText = showTraceTree dapp vm
       traceId <- liftIO $ pushRing st.traces (\idVal ->
         MCPTrace { traceId = idVal, timestamp = now, selector = selector, reason = r, trace = traceText }
         )
@@ -1228,12 +1232,15 @@ resourceWithArgs base args =
 
 recordEvent :: MCPState -> LocalTime -> CampaignEvent -> IO ()
 recordEvent st ts ev = do
-  let (wid, wtype, etype, payload) = case ev of
+  -- Force payload (toJSON e) here so the stored MCPEvent.payload Value
+  -- doesn't close over the original WorkerEvent (which can transitively
+  -- pin EchidnaTest, [Tx] reproducer sequences, and VM state).
+  let !(wid, wtype, etype, !payload) = case ev of
         Worker.WorkerEvent wid' wtype' e ->
           (Just wid', Just (workerTypeText wtype'), workerEventType e, toJSON e)
         Worker.Failure msg -> (Nothing, Nothing, "Failure", toJSON msg)
         Worker.ReproducerSaved f -> (Nothing, Nothing, "ReproducerSaved", toJSON f)
-      event = MCPEvent 0 (formatTimestamp ts) wid wtype etype payload
+      !event = MCPEvent 0 (formatTimestamp ts) wid wtype etype payload
   _ <- pushRing st.events (\idVal -> event { eventId = idVal })
   pure ()
 
