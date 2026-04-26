@@ -13,6 +13,7 @@ module Echidna.MCP
   ) where
 
 import Control.Concurrent (forkIO)
+import Control.DeepSeq (force, deepseq)
 import Control.Exception (IOException, catch)
 import Control.Monad (forever, forM_, unless)
 import Control.Monad.IO.Class (liftIO, MonadIO)
@@ -179,7 +180,10 @@ mcpCheckpoint Env{mcpState} =
     Just st -> waitIfPaused st
 
 recordLogicalCoverage :: (MonadIO m) => MCPState -> Int -> LogicalCoverage -> m ()
-recordLogicalCoverage st wid cov =
+recordLogicalCoverage st wid !cov =
+  -- Bang on cov forces it to WHNF before storing; combined with StrictData
+  -- on LogicalCoverage internals this prevents per-iter merge thunks from
+  -- chaining through the worker map.
   liftIO $ atomicModifyIORef' st.logicalByWorker $ \m -> (Map.insert wid cov m, ())
 
 -- | Record a transaction, handler stats, and reverts/traces if applicable.
@@ -220,7 +224,9 @@ recordTx st vm tx result = do
   -- update handler stats
   case tx.call of
     SolCall solCall -> do
-      let args = map (T.pack . ppAbiValue vm.labels) (snd solCall)
+      -- Deep-force args so each Text element is fully evaluated and no longer
+      -- closes over `vm.labels` via a lazy `T.pack . ppAbiValue` thunk.
+      let !args = force (map (T.pack . ppAbiValue vm.labels) (snd solCall))
       let updateStat stat =
             stat
               { totalCalls = stat.totalCalls + 1
@@ -231,7 +237,8 @@ recordTx st vm tx result = do
               }
       liftIO $ atomicModifyIORef' st.handlers $ \m ->
         let stat = Map.findWithDefault (HandlerStat 0 0 0 [] now) (fromMaybe "unknown" methodName) m
-            m' = Map.insert (fromMaybe "unknown" methodName) (updateStat stat) m
+            !newStat = updateStat stat
+            m' = Map.insert (fromMaybe "unknown" methodName) newStat m
         in (m', ())
     _ -> pure ()
 
@@ -1232,14 +1239,16 @@ resourceWithArgs base args =
 
 recordEvent :: MCPState -> LocalTime -> CampaignEvent -> IO ()
 recordEvent st ts ev = do
-  -- Force payload (toJSON e) here so the stored MCPEvent.payload Value
-  -- doesn't close over the original WorkerEvent (which can transitively
-  -- pin EchidnaTest, [Tx] reproducer sequences, and VM state).
-  let !(wid, wtype, etype, !payload) = case ev of
+  -- Deep-force payload (toJSON e) so the stored MCPEvent.payload Value
+  -- doesn't pin the originating WorkerEvent (which can transitively hold
+  -- EchidnaTest, [Tx] reproducer sequences, and VM state). `force` on Value
+  -- traverses Object/Array contents (NFData Value provided by aeson).
+  let (wid, wtype, etype, payload_thunk) = case ev of
         Worker.WorkerEvent wid' wtype' e ->
           (Just wid', Just (workerTypeText wtype'), workerEventType e, toJSON e)
         Worker.Failure msg -> (Nothing, Nothing, "Failure", toJSON msg)
         Worker.ReproducerSaved f -> (Nothing, Nothing, "ReproducerSaved", toJSON f)
+      !payload = force payload_thunk
       !event = MCPEvent 0 (formatTimestamp ts) wid wtype etype payload
   _ <- pushRing st.events (\idVal -> event { eventId = idVal })
   pure ()

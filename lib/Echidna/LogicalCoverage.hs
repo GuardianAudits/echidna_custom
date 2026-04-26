@@ -65,7 +65,7 @@ updateLogicalCoverage maxReasons vm tx result (LogicalCoverage m) =
       let success = isSuccess result
       let reason = if success then Nothing else failureReason result
       let existing = Map.findWithDefault (emptyCallStats (length (snd solCall))) methodKey m
-      let updated = applyCallUpdate maxReasons success calldataLen (snd solCall) reason existing
+      let !updated = applyCallUpdate maxReasons success calldataLen (snd solCall) reason existing
       pure $ LogicalCoverage $ Map.insert methodKey updated m
     _ -> pure $ LogicalCoverage m
 
