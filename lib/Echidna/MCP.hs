@@ -200,7 +200,12 @@ recordTx
   -> Tx
   -> VMResult Concrete
   -> m ()
-recordTx st vm tx result = do
+recordTx st vm tx0 result = do
+  -- Deep-force the Tx parameter immediately so the stored MCPTx.tx and
+  -- MCPRevert.tx fields hold fully-evaluated values rather than thunks
+  -- that could pin the VM via TxCall.SolCalldata bytestrings (lazy slices)
+  -- or the call's solCall reference structure.
+  let !tx = force tx0
   Env{dapp} <- ask
   let success = isSuccessResult result
   let reason = failureReasonText result
