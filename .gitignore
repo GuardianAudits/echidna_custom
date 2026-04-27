@@ -42,4 +42,4 @@ echidna.cabal.before
 *.cabal.before
 RELEASE*.md
 release*.md
-changes.md
+changes.mdlibff/
