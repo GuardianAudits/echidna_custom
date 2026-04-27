@@ -2,6 +2,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE Strict #-}
+-- Strict makes every let/where/lambda binding in this module strict by default.
+-- This catches lazy thunks at construction time across the per-iteration
+-- recording paths (recordTx, recordEvent, recordTestState, etc.) without
+-- needing per-site bang patterns. Functions called from this module that are
+-- defined elsewhere are unaffected (their own laziness is preserved).
 
 module Echidna.MCP
   ( startMCPServer
@@ -680,7 +686,11 @@ recordTestState :: MCPState -> Int -> EchidnaTest -> IO ()
 recordTestState st idx test = do
   now <- getCurrentTime
   purgeExpiredReproducers st now
-  let key = mkTestKey st idx test
+  -- Force the reproducer list spine + tx contents BEFORE building the
+  -- artifact, so the three references (Latest/Best/Candidate) all point
+  -- at the same fully-evaluated [Tx] rather than three thunk chains.
+  let !reproTxs = force test.reproducer
+      !key = mkTestKey st idx test
       artifact = MCPReproducerArtifact
         { testKey = key
         , testId = key
@@ -689,9 +699,9 @@ recordTestState st idx test = do
         , testState = renderTestState test.state
         , campaignId = st.campaignId
         , reproducer = MCPReproducerTxSet
-            { reproducerLatest = test.reproducer
-            , reproducerBest = test.reproducer
-            , reproducerCandidate = test.reproducer
+            { reproducerLatest = reproTxs
+            , reproducerBest = reproTxs
+            , reproducerCandidate = reproTxs
             }
         , shrink = MCPReproducerShrink
             { shrinkStatus = inferShrinkStatus test.state
@@ -1115,8 +1125,13 @@ updateExistingJob MCPState{reproducerJobs = jobsRef, maxReproducerArtifacts = ma
 syncJobsForTest :: MCPState -> Text -> MCPReproducerArtifact -> UTCTime -> IO ()
 syncJobsForTest st key artifact now = do
   atomicModifyIORef' st.reproducerJobs $ \jobs ->
-    let jobs' = Map.mapWithKey (updateJobStatus key artifact now) jobs
-        jobs'' = trimByUpdatedAt st.maxReproducerArtifacts jobUpdatedAt jobs'
+    -- Map.mapWithKey from Data.Map.Strict only forces the spine; values
+    -- end up as thunks pointing at the previous job + artifact. Iterating
+    -- jobs after mapWithKey via foldlWithKey forces values strictly.
+    let !jobs' = Map.foldlWithKey'
+          (\acc k j -> let !j' = updateJobStatus key artifact now k j
+                       in Map.insert k j' acc) Map.empty jobs
+        !jobs'' = trimByUpdatedAt st.maxReproducerArtifacts jobUpdatedAt jobs'
     in (jobs'', ())
 
 updateJobStatus :: Text -> MCPReproducerArtifact -> UTCTime -> Text -> MCPReproducerJob -> MCPReproducerJob
@@ -1167,13 +1182,17 @@ getReproducerArtifact st now key = do
 emitReproducerEvent :: MCPState -> Text -> Text -> Value -> IO ()
 emitReproducerEvent st etype key payload = do
   now <- getTimestamp
+  -- Deep-force payload so the stored MCPReproducerEvent doesn't pin the
+  -- source MCPReproducerArtifact (which has the full reproducer Tx list)
+  -- via an unforced toJSON thunk.
+  let !payload' = force payload
   _ <- pushRing st.reproducerEvents $ \eventId -> MCPReproducerEvent
     { reproducerEventId = eventId
     , reproducerEventTs = formatTimestamp now
     , reproducerEventType = etype
     , reproducerEventKey = key
     , reproducerEventTestKey = key
-    , reproducerEventPayload = payload
+    , reproducerEventPayload = payload'
     }
   pure ()
 
