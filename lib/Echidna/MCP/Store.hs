@@ -21,6 +21,8 @@ import Data.Map.Strict (Map)
 import Data.Sequence (Seq(..))
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
+import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import Echidna.LogicalCoverage.Types (LogicalCoverage)
 
 import Echidna.MCP.Types
@@ -94,6 +96,8 @@ data MCPState = MCPState
   , maxReproducerTxs :: Int
   , control    :: MCPControl
   , phase      :: IORef Text
+  , startedAtMonotonicNs :: Word64
+  , monotonicNowNs :: IO Word64
   }
 
 newMCPState
@@ -125,6 +129,7 @@ newMCPState
   gate <- newMVar ()
   stopRef <- newIORef False
   phaseRef <- newIORef "running"
+  startedAtMonotonicNs <- getMonotonicTimeNSec
   pure MCPState
     { events = eventsRef
     , reverts = revertsRef
@@ -146,6 +151,8 @@ newMCPState
     , maxReproducerTxs = maxReproducerTxs
     , control = MCPControl gate stopRef
     , phase = phaseRef
+    , startedAtMonotonicNs = startedAtMonotonicNs
+    , monotonicNowNs = getMonotonicTimeNSec
     }
 
 pauseMCP :: MCPState -> IO ()
