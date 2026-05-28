@@ -111,26 +111,30 @@
             ])
           ]);
 
-        echidna-profiled = pkgs: with pkgs; lib.pipe
-          (echidna pkgs)
-          ([
-            haskell.lib.compose.enableLibraryProfiling
-            haskell.lib.compose.enableExecutableProfiling
-            haskell.lib.compose.disableSharedLibraries
-            haskell.lib.compose.disableSharedExecutables
-            (haskell.lib.compose.overrideCabal (_: {
-              profilingDetail = "all-functions";
-            }))
-            (haskell.lib.compose.appendConfigureFlags ([
-              "--ghc-option=-prof"
-              "--ghc-option=-fprof-auto"
-              "--ghc-option=-fprof-cafs"
-              "--ghc-option=-rtsopts"
-              "--ghc-option=-eventlog"
-            ] ++ lib.optionals stdenv.hostPlatform.isLinux [
-              "--ghc-option=-fexternal-interpreter"
-            ]))
-          ]);
+        echidna-profiled = pkgs: with pkgs;
+          let
+            isAarch64Darwin = stdenv.hostPlatform.system == "aarch64-darwin";
+          in
+          lib.pipe
+            (echidna pkgs)
+            ([
+              haskell.lib.compose.enableLibraryProfiling
+              haskell.lib.compose.enableExecutableProfiling
+              haskell.lib.compose.disableSharedLibraries
+              haskell.lib.compose.disableSharedExecutables
+              (haskell.lib.compose.overrideCabal (_: {
+                profilingDetail = if isAarch64Darwin then "exported-functions" else "all-functions";
+              }))
+              (haskell.lib.compose.appendConfigureFlags ([
+                "--ghc-option=-prof"
+                "--ghc-option=-fexternal-interpreter"
+                "--ghc-option=-fprof-cafs"
+                "--ghc-option=-rtsopts"
+                "--ghc-option=-eventlog"
+              ] ++ lib.optionals (!isAarch64Darwin) [
+                "--ghc-option=-fprof-auto"
+              ]))
+            ]);
 
         echidna-profiled-static = with pkgsGHC; lib.pipe
           (echidna-profiled pkgsGHC)
