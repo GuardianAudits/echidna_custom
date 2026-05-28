@@ -6,7 +6,7 @@ on:
       hevm_repository:
         description: "hevm repository (owner/repo)"
         required: true
-        default: "r0bert-ethack/hevm_custom"
+        default: "GuardianAudits/hevm_custom"
       hevm_ref:
         description: "hevm git ref (branch/tag/sha)"
         required: true
