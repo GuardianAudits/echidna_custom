@@ -19,6 +19,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+    env:
+      NIX_CONFIG: |
+        access-tokens = github.com=${{ github.token }}
     strategy:
       fail-fast: false
       matrix:
