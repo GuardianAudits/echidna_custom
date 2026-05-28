@@ -1,0 +1,114 @@
+name: "Nix profiled artifacts"
+
+on:
+  workflow_dispatch:
+    inputs:
+      hevm_repository:
+        description: "hevm repository (owner/repo)"
+        required: true
+        default: "r0bert-ethack/hevm_custom"
+      hevm_ref:
+        description: "hevm git ref (branch/tag/sha)"
+        required: true
+        default: "main"
+
+jobs:
+  nixProfiledBuild:
+    name: Build ${{ matrix.name }} profiled binary
+    timeout-minutes: ${{ matrix.timeout || 300 }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (x86_64)
+            tuple: x86_64-linux
+            system: x86_64-linux
+            timeout: 300
+            runner: ubuntu-24.04
+          - name: Linux (aarch64)
+            tuple: aarch64-linux
+            system: aarch64-linux
+            timeout: 300
+            runner: ubuntu-24.04-arm
+          - name: macOS (x86_64)
+            tuple: x86_64-macos
+            system: x86_64-darwin
+            timeout: 360
+            runner: macos-15
+          - name: macOS (aarch64)
+            tuple: aarch64-macos
+            system: aarch64-darwin
+            timeout: 360
+            runner: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Checkout hevm
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.hevm_repository }}
+          ref: ${{ inputs.hevm_ref }}
+          path: hevm-src
+          fetch-depth: 1
+          token: ${{ secrets.HEVM_CHECKOUT_TOKEN || github.token }}
+
+      - name: Install Rosetta
+        if: matrix.system == 'x86_64-darwin'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Install Nix
+        if: matrix.system != 'x86_64-darwin'
+        uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Install Nix (x86_64-darwin via Apple Silicon host)
+        if: matrix.system == 'x86_64-darwin'
+        uses: DeterminateSystems/nix-installer-action@v21
+        with:
+          extra-conf: |
+            extra-platforms = x86_64-darwin aarch64-darwin
+
+      - name: Configure Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: trailofbits
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          pushFilter: "(-echidna-.+$)"
+
+      - name: Obtain version number
+        id: version
+        run: |
+          if [[ "$GIT_REF" =~ ^refs/tags/v.* ]]; then
+            echo "version=$(echo "$GIT_REF" | sed 's#^refs/tags/v##')-profiled" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=HEAD-$(echo "$GIT_SHA" | cut -c1-7)-profiled" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GIT_REF: ${{ github.ref }}
+          GIT_SHA: ${{ github.sha }}
+
+      - name: Build profiled redistributable echidna
+        env:
+          HEVM_SRC: ${{ github.workspace }}/hevm-src
+          NIX_SYSTEM: ${{ matrix.system }}
+        run: |
+          nix build ".#packages.${NIX_SYSTEM}.echidna-profiled-redistributable" --out-link profiled-redistributable --impure --print-build-logs
+          tar -czf "echidna-${{ steps.version.outputs.version }}-${{ matrix.tuple }}.tar.gz" -C ./profiled-redistributable/bin/ echidna
+
+      - name: Verify RTS heap profiling
+        run: |
+          ./profiled-redistributable/bin/echidna --version +RTS --info -RTS | tee "rts-info-${{ matrix.tuple }}.txt"
+          profile_prefix="$RUNNER_TEMP/echidna-prof-smoke-${{ matrix.tuple }}"
+          ./profiled-redistributable/bin/echidna --version +RTS -hy -i0.1 -po"$profile_prefix" -RTS
+          test -s "$profile_prefix.hp"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: echidna-profiled-redistributable-${{ matrix.tuple }}
+          path: |
+            echidna-${{ steps.version.outputs.version }}-${{ matrix.tuple }}.tar.gz
+            rts-info-${{ matrix.tuple }}.txt

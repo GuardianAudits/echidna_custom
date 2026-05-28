@@ -111,12 +111,49 @@
             ])
           ]);
 
+        echidna-profiled = pkgs: with pkgs; lib.pipe
+          (echidna pkgs)
+          ([
+            haskell.lib.compose.enableLibraryProfiling
+            haskell.lib.compose.enableExecutableProfiling
+            (haskell.lib.compose.overrideCabal (_: {
+              profilingDetail = "all-functions";
+            }))
+            (haskell.lib.compose.appendConfigureFlags [
+              "--ghc-option=-prof"
+              "--ghc-option=-fprof-auto"
+              "--ghc-option=-fprof-cafs"
+              "--ghc-option=-rtsopts"
+              "--ghc-option=-eventlog"
+            ])
+          ]);
+
+        echidna-profiled-static = with pkgsGHC; lib.pipe
+          (echidna-profiled pkgsGHC)
+          ([
+            (haskell.lib.compose.appendConfigureFlags
+              (map (drv: "--extra-lib-dirs=${stripDylib drv}/lib") dependencies-static))
+            (haskell.lib.compose.enableCabalFlag "static")
+          ] ++ lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
+            # FIXME: work around wrong libdw / libelf linking on musl builds on x86_64
+            (haskell.lib.compose.appendConfigureFlags [
+              "--ghc-option=-optl-Wl,--start-group"
+              "--ghc-option=-optl-lelf"
+              "--ghc-option=-optl-ldw"
+              "--ghc-option=-optl-lzstd"
+              "--ghc-option=-optl-lz"
+              "--ghc-option=-optl-lbz2"
+              "--ghc-option=-optl-llzma"
+              "--ghc-option=-optl-Wl,--end-group"
+            ])
+          ]);
+
         # "static" binary for distribution
         # on linux this is actually a real fully static binary
         # on macos this has everything except libcxx and libsystem
         # statically linked. we can be confident that these two will always
         # be provided in a well known location by macos itself.
-        darwinRewriteRedistributable = exeName:
+        darwinRewriteRedistributable = exeName: sourcePackage:
           let
             grep = "${pkgs.gnugrep}/bin/grep";
             otool = "${pkgs.darwin.binutils.bintools}/bin/otool";
@@ -126,7 +163,7 @@
           in
             pkgs.runCommand "echidna-${exeName}-stripNixRefs" {} ''
               mkdir -p $out/bin
-              cp ${pkgs.haskell.lib.dontCheck echidna-static}/bin/${exeName} $out/bin/
+              cp ${pkgs.haskell.lib.dontCheck sourcePackage}/bin/${exeName} $out/bin/
               exe="$out/bin/${exeName}"
               chmod 777 "$exe"
               # rewrite /nix/... library paths to point to /usr/lib
@@ -150,11 +187,14 @@
               chmod 555 "$exe"
             '';
         echidnaRedistributable = if pkgs.stdenv.isDarwin
-          then darwinRewriteRedistributable "echidna"
+          then darwinRewriteRedistributable "echidna" echidna-static
           else echidna-static;
         echidnaCorpusHubRedistributable = if pkgs.stdenv.isDarwin
-          then darwinRewriteRedistributable "echidna-corpus-hub"
+          then darwinRewriteRedistributable "echidna-corpus-hub" echidna-static
           else echidna-static;
+        echidnaProfiledRedistributable = if pkgs.stdenv.isDarwin
+          then darwinRewriteRedistributable "echidna" echidna-profiled-static
+          else echidna-profiled-static;
 
         # if we pass a library folder to ghc via --extra-lib-dirs that contains
         # only .a files, then ghc will link that library statically instead of
@@ -169,9 +209,11 @@
 
       in rec {
         packages.echidna = echidna pkgs;
+        packages.echidna-profiled = echidna-profiled pkgs;
         packages.default = echidna pkgs;
 
         packages.echidna-redistributable = echidnaRedistributable;
+        packages.echidna-profiled-redistributable = echidnaProfiledRedistributable;
         packages.echidna-corpus-hub-redistributable = echidnaCorpusHubRedistributable;
 
         devShells = with pkgs; {
