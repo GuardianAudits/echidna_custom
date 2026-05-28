@@ -100,8 +100,9 @@ jobs:
 
       - name: Verify RTS heap profiling
         run: |
-          ./profiled-redistributable/bin/echidna --version +RTS --info -RTS | tee "rts-info-${{ matrix.tuple }}.txt"
-          profile_prefix="$RUNNER_TEMP/echidna-prof-smoke-${{ matrix.tuple }}"
+          mkdir -p profiling-history
+          ./profiled-redistributable/bin/echidna --version +RTS --info -RTS | tee "rts-info-${{ matrix.tuple }}.txt" "profiling-history/rts-info-${{ matrix.tuple }}.txt"
+          profile_prefix="$PWD/profiling-history/echidna-prof-smoke-${{ matrix.tuple }}-${{ github.run_id }}-${{ github.run_attempt }}"
           ./profiled-redistributable/bin/echidna --version +RTS -hy -i0.1 -po"$profile_prefix" -RTS
           test -s "$profile_prefix.hp"
 
@@ -112,3 +113,12 @@ jobs:
           path: |
             echidna-${{ steps.version.outputs.version }}-${{ matrix.tuple }}.tar.gz
             rts-info-${{ matrix.tuple }}.txt
+
+      - name: Upload profiling history
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: echidna-profile-history-${{ matrix.tuple }}
+          path: profiling-history/
+          if-no-files-found: ignore
+          retention-days: 90

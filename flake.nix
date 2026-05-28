@@ -121,14 +121,15 @@
             (haskell.lib.compose.overrideCabal (_: {
               profilingDetail = "all-functions";
             }))
-            (haskell.lib.compose.appendConfigureFlags [
+            (haskell.lib.compose.appendConfigureFlags ([
               "--ghc-option=-prof"
               "--ghc-option=-fprof-auto"
               "--ghc-option=-fprof-cafs"
-              "--ghc-option=-fexternal-interpreter"
               "--ghc-option=-rtsopts"
               "--ghc-option=-eventlog"
-            ])
+            ] ++ lib.optionals stdenv.hostPlatform.isLinux [
+              "--ghc-option=-fexternal-interpreter"
+            ]))
           ]);
 
         echidna-profiled-static = with pkgsGHC; lib.pipe
