@@ -116,6 +116,8 @@
           ([
             haskell.lib.compose.enableLibraryProfiling
             haskell.lib.compose.enableExecutableProfiling
+            haskell.lib.compose.disableSharedLibraries
+            haskell.lib.compose.disableSharedExecutables
             (haskell.lib.compose.overrideCabal (_: {
               profilingDetail = "all-functions";
             }))
