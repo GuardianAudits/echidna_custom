@@ -19,9 +19,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-    env:
-      NIX_CONFIG: |
-        access-tokens = github.com=${{ secrets.HEVM_CHECKOUT_TOKEN || github.token }}
     strategy:
       fail-fast: false
       matrix:
@@ -67,13 +64,13 @@ jobs:
         if: matrix.system != 'x86_64-darwin'
         uses: DeterminateSystems/nix-installer-action@v21
         with:
-          github-token: ${{ secrets.HEVM_CHECKOUT_TOKEN || github.token }}
+          github-token: ""
 
       - name: Install Nix (x86_64-darwin via Apple Silicon host)
         if: matrix.system == 'x86_64-darwin'
         uses: DeterminateSystems/nix-installer-action@v21
         with:
-          github-token: ${{ secrets.HEVM_CHECKOUT_TOKEN || github.token }}
+          github-token: ""
           extra-conf: |
             extra-platforms = x86_64-darwin aarch64-darwin
 
