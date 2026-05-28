@@ -125,6 +125,7 @@
               "--ghc-option=-prof"
               "--ghc-option=-fprof-auto"
               "--ghc-option=-fprof-cafs"
+              "--ghc-option=-fexternal-interpreter"
               "--ghc-option=-rtsopts"
               "--ghc-option=-eventlog"
             ])
