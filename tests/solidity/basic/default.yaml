@@ -66,6 +66,8 @@ timeout: null
 #dictFreq controls how often to use echidna's internal dictionary vs random
 #values
 dictFreq: 0.40
+#maxDynamicArrayLength caps Echidna-generated dynamic ABI arrays; null preserves legacy behavior
+maxDynamicArrayLength: 20
 maxTimeDelay: 604800
 #maximum time between generated txs; default is one week
 maxBlockDelay: 60480

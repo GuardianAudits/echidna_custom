@@ -84,6 +84,8 @@ data CampaignConf = CampaignConf
     -- ^ Maximum number of samples for future expansions
   , logicalCoverageMaxDepth :: Int
     -- ^ Maximum depth for nested types in future expansions
+  , maxDynamicArrayLength :: Maybe Int
+    -- ^ Maximum generated/mutated dynamic array length. Nothing preserves legacy behavior.
   }
 
 -- | The state of a fuzzing campaign.

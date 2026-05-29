@@ -123,7 +123,15 @@ data GenDict = GenDict
     -- ^ A set of int/uint constants for better performance
   , callbackSigs    :: ![SolSignature]
     -- ^ A list of callback signatures (for generating random callbacks)
+  , dynamicArrayBound :: Maybe Int
+    -- ^ Maximum generated/mutated dynamic array length. Nothing preserves legacy behavior.
   }
+
+defaultDynamicArrayBound :: Int
+defaultDynamicArrayBound = 20
+
+legacyDynamicArrayMax :: Int
+legacyDynamicArrayMax = 32
 
 hashMapBy
   :: (Ord k, Eq k, Ord a)
@@ -134,7 +142,8 @@ hashMapBy f = Map.fromListWith Set.union . fmap (\v -> (f v, Set.singleton v)) .
 
 gaddCalls :: Set SolCall -> GenDict -> GenDict
 gaddCalls calls dict =
-  dict { wholeCalls = dict.wholeCalls <> hashMapBy (fmap $ fmap abiValueType) calls }
+  dict { wholeCalls = dict.wholeCalls <> hashMapBy (fmap $ fmap abiValueType) boundedCalls }
+  where boundedCalls = Set.map (boundAbiCallWithBound dict.dynamicArrayBound) calls
 
 -- | Construct a 'GenDict' from some dictionaries, a 'Float', a default seed,
 -- and a typing rule for return values
@@ -146,16 +155,36 @@ mkGenDict
   -> (Text -> Maybe AbiType) -- ^ A return value typing rule
   -> [SolSignature]
   -> GenDict
-mkGenDict mutationChance abiValues solCalls seed typingRule =
+mkGenDict = mkGenDictWithBound (Just defaultDynamicArrayBound)
+
+mkGenDictWithBound
+  :: Maybe Int
+  -> Float
+  -> Set AbiValue
+  -> Set SolCall
+  -> Int
+  -> (Text -> Maybe AbiType)
+  -> [SolSignature]
+  -> GenDict
+mkGenDictWithBound dynamicArrayBound mutationChance abiValues solCalls seed typingRule callbackSigs =
   GenDict mutationChance
-          (hashMapBy abiValueType abiValues)
-          (hashMapBy (fmap $ fmap abiValueType) solCalls)
+          (hashMapBy abiValueType boundedAbiValues)
+          (hashMapBy (fmap $ fmap abiValueType) boundedSolCalls)
           seed
           typingRule
-          (mkDictValues abiValues)
+          (mkDictValues boundedAbiValues)
+          callbackSigs
+          dynamicArrayBound
+  where
+    boundedAbiValues = Set.map (boundAbiValueWithBound dynamicArrayBound) abiValues
+    boundedSolCalls = Set.map (boundAbiCallWithBound dynamicArrayBound) solCalls
 
 emptyDict :: GenDict
 emptyDict = mkGenDict 0 Set.empty Set.empty 0 (const Nothing) []
+
+emptyDictWithBound :: Maybe Int -> GenDict
+emptyDictWithBound dynamicArrayBound =
+  mkGenDictWithBound dynamicArrayBound 0 Set.empty Set.empty 0 (const Nothing) []
 
 mkDictValues :: Set AbiValue -> Set W256
 mkDictValues =
@@ -202,6 +231,9 @@ getRandomInt n =
 -- recursive types can be generated using the same dictionary easily
 genAbiValue :: MonadRandom m => AbiType -> m AbiValue
 genAbiValue = genAbiValueM emptyDict
+
+genAbiValueWithBound :: MonadRandom m => Maybe Int -> AbiType -> m AbiValue
+genAbiValueWithBound dynamicArrayBound = genAbiValueM (emptyDictWithBound dynamicArrayBound)
 
 -- Mutation helper functions
 
@@ -269,6 +301,18 @@ canShrinkAbiValue = \case
   AbiAddress 0        -> False
   _                   -> True
 
+boundAbiValueWithBound :: Maybe Int -> AbiValue -> AbiValue
+boundAbiValueWithBound Nothing v = v
+boundAbiValueWithBound bound@(Just n) abiValue = case abiValue of
+  AbiArrayDynamic t l -> AbiArrayDynamic t $ boundAbiValueWithBound bound <$> V.take n l
+  AbiArray s t l      -> AbiArray s t $ boundAbiValueWithBound bound <$> l
+  AbiTuple vals       -> AbiTuple $ boundAbiValueWithBound bound <$> vals
+  other               -> other
+
+boundAbiCallWithBound :: Maybe Int -> SolCall -> SolCall
+boundAbiCallWithBound dynamicArrayBound (name, vals) =
+  (name, boundAbiValueWithBound dynamicArrayBound <$> vals)
+
 shrinkInt :: (Integral a, MonadRandom m) => a -> m a
 shrinkInt x = fromIntegral <$> getRandomR (0, toInteger x)
 
@@ -322,7 +366,10 @@ shrinkAbiCall (name, vals) = do
 
 -- | Given an 'AbiValue', generate a random \"similar\" value of the same 'AbiType'.
 mutateAbiValue :: MonadRandom m => AbiValue -> m AbiValue
-mutateAbiValue = \case
+mutateAbiValue = mutateAbiValueWithBound Nothing
+
+mutateAbiValueWithBound :: MonadRandom m => Maybe Int -> AbiValue -> m AbiValue
+mutateAbiValueWithBound dynamicArrayBound = \case
   AbiUInt n x -> getRandomR (0, 9 :: Int) >>= -- 10% of chance of mutation
                  \case 0 -> fixAbiUInt n <$> mutateNum x
                        _ -> pure $ AbiUInt n x
@@ -338,21 +385,24 @@ mutateAbiValue = \case
 
   AbiBytesDynamic b -> AbiBytesDynamic <$> mutateLL Nothing mempty b
   AbiString b -> AbiString <$> mutateLL Nothing mempty b
-  AbiArray n t l -> do fs <- replicateM n $ genAbiValue t
+  AbiArray n t l -> do fs <- replicateM n $ genAbiValueWithBound dynamicArrayBound t
                        xs <- mutateLL (Just n) (V.fromList fs) l
                        pure $ AbiArray n t xs
 
-  AbiArrayDynamic t l -> AbiArrayDynamic t <$> mutateLL Nothing mempty l
-  AbiTuple v -> AbiTuple <$> traverse mutateAbiValue v
+  AbiArrayDynamic t l -> AbiArrayDynamic t <$> mutateLL dynamicArrayBound mempty l
+  AbiTuple v -> AbiTuple <$> traverse (mutateAbiValueWithBound dynamicArrayBound) v
   AbiFunction addr sel -> pure $ AbiFunction addr sel
 
 -- | Given a 'SolCall', generate a random \"similar\" call with the same 'SolSignature'.
 -- Note that this function will mutate a *single* argument (if any)
 mutateAbiCall :: MonadRandom m => SolCall -> m SolCall
-mutateAbiCall = traverse f
+mutateAbiCall = mutateAbiCallWithBound Nothing
+
+mutateAbiCallWithBound :: MonadRandom m => Maybe Int -> SolCall -> m SolCall
+mutateAbiCallWithBound dynamicArrayBound = traverse f
   where f [] = pure []
         f xs = do k <- getRandomR (0, length xs - 1)
-                  mv <- mutateAbiValue $ xs !! k
+                  mv <- mutateAbiValueWithBound dynamicArrayBound $ xs !! k
                   return $ replaceAt mv xs k
 
 -- Generation, with dictionary
@@ -383,7 +433,7 @@ pregenAbiAdds :: [AbiValue]
 pregenAbiAdds = map (AbiAddress . fromIntegral) pregenAdds
 
 -- | Synthesize a random 'AbiValue' given its 'AbiType'. Requires a dictionary.
--- Only produce lists with number of elements in the range [1, 32]
+-- Only produce dynamic arrays up to the configured bound by default.
 genAbiValueM :: MonadRandom m => GenDict -> AbiType -> m AbiValue
 genAbiValueM genDict = genAbiValueM' genDict "" 0
 
@@ -412,7 +462,7 @@ genAbiValueM' genDict funcName depth t =
                  ]
         AbiStringType         -> liftM2 (\n -> AbiString       . BS.pack . take n)
                                         (getRandomR (1, 32)) getRandoms
-        AbiArrayDynamicType t' -> fmap (AbiArrayDynamic t') $ getRandomR (1, 32)
+        AbiArrayDynamicType t' -> fmap (AbiArrayDynamic t') $ getRandomR (1, dynamicArrayMax)
                                  >>= flip V.replicateM (genAbiValueM' genDict funcName (depth + 1) t')
         AbiArrayType n t'      -> AbiArray n t' <$> V.replicateM n (genAbiValueM' genDict funcName (depth + 1) t')
         AbiTupleType v        -> AbiTuple <$> traverse (genAbiValueM' genDict funcName (depth + 1)) v
@@ -421,7 +471,9 @@ genAbiValueM' genDict funcName depth t =
           let addr = bytesToAddr (BS.take 20 bytes)
               sel = FunctionSelector (word32 (BS.unpack (BS.drop 20 bytes)))
           pure $ AbiFunction addr sel
-  in genWithDict genDict genDict.constants go t
+  in boundAbiValueWithBound genDict.dynamicArrayBound <$> genWithDict genDict genDict.constants go t
+  where
+    dynamicArrayMax = maybe legacyDynamicArrayMax (max 1) genDict.dynamicArrayBound
 
 -- | Given a 'SolSignature', generate a random 'SolCall' with that signature,
 -- possibly with a dictionary.
@@ -432,7 +484,8 @@ genAbiCallM genDict (name, types) = do
                          genDict.wholeCalls
                          (const ((name,) <$> genVals))
                          (name, types)
-  mutateAbiCall solCall
+  boundAbiCallWithBound genDict.dynamicArrayBound <$>
+    mutateAbiCallWithBound genDict.dynamicArrayBound solCall
 
 selectWeightedSignature :: MonadRandom m => NonEmpty WeightedSignature -> m WeightedSignature
 selectWeightedSignature =

@@ -6,6 +6,7 @@ import Control.Monad.State (StateT(..), runStateT, modify')
 import Control.Monad.Trans (lift)
 import Data.Aeson
 import Data.Aeson.KeyMap (keys)
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bool (bool)
 import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
@@ -18,6 +19,7 @@ import Data.Yaml qualified as Y
 import EVM.Solvers (Solver(..))
 import EVM.Types (VM(..), W256)
 
+import Echidna.ABI (defaultDynamicArrayBound)
 import Echidna.Mutator.Corpus (defaultMutationConsts)
 import Echidna.Test
 import Echidna.Types.Campaign
@@ -129,7 +131,19 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "logicalCoverageMaxReasons" ..!= defaultLogicalCoverageMaxReasons
         <*> v ..:? "logicalCoverageMaxSamples" ..!= defaultLogicalCoverageMaxSamples
         <*> v ..:? "logicalCoverageMaxDepth" ..!= defaultLogicalCoverageMaxDepth
+        <*> dynamicArrayBound
         where
+        dynamicArrayBound = do
+          useKey "maxDynamicArrayLength"
+          case KeyMap.lookup "maxDynamicArrayLength" v of
+            Nothing -> pure (Just defaultDynamicArrayBound)
+            Just Null -> pure Nothing
+            Just raw -> do
+              n <- lift (parseJSON raw)
+              when (n <= 0) $
+                lift $ fail "maxDynamicArrayLength must be a positive integer or null"
+              pure (Just n)
+
         smtSolver = v ..:? "symExecSMTSolver" >>= \case
           Just ("z3" :: String)  -> pure Z3
           Just "cvc5"            -> pure CVC5

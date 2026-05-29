@@ -82,12 +82,14 @@ replayCorpus
   -> m ()
 replayCorpus vm txSeqs =
   forM_ (zip [1..] txSeqs) $ \(i, (file, txSeq)) -> do
+    dynamicArrayBound <- asks (.cfg.campaignConf.maxDynamicArrayLength)
+    let boundedTxSeq = boundTxsWithBound dynamicArrayBound txSeq
     let maybeFaultyTx =
           List.find (\tx -> LitAddr tx.dst `notElem` Map.keys vm.env.contracts) $
-            List.filter (\case Tx { call = NoCall } -> False; _ -> True) txSeq
+            List.filter (\case Tx { call = NoCall } -> False; _ -> True) boundedTxSeq
     case maybeFaultyTx of
       Nothing -> do
-        _ <- callseq vm txSeq
+        _ <- callseq vm boundedTxSeq
         pushWorkerEvent (TxSequenceReplayed file i (length txSeqs))
       Just faultyTx ->
         pushWorkerEvent (TxSequenceReplayFailed file faultyTx)
@@ -447,6 +449,7 @@ randseq deployedContracts = do
   let
     mutConsts = env.cfg.campaignConf.mutConsts
     seqLen = env.cfg.campaignConf.seqLen
+    dynamicArrayBound = env.cfg.campaignConf.maxDynamicArrayLength
 
   -- TODO: include reproducer when optimizing
   --let rs = filter (not . null) $ map (.testReproducer) $ ca._tests
@@ -457,11 +460,12 @@ randseq deployedContracts = do
   cmut <- if seqLen == 1 then seqMutatorsStateless (fromConsts mutConsts)
                          else seqMutatorsStateful (fromConsts mutConsts)
   -- Fetch the mutator
-  let mut = getCorpusMutation cmut
+  let mut = getCorpusMutation dynamicArrayBound cmut
   corpus <- liftIO $ readIORef env.corpusRef
-  if null corpus
-    then pure randTxs -- Use the generated random transactions
-    else mut seqLen corpus randTxs -- Apply the mutator
+  boundTxsWithBound dynamicArrayBound <$>
+    if null corpus
+      then pure randTxs -- Use the generated random transactions
+      else mut seqLen corpus randTxs -- Apply the mutator
 
 -- TODO callseq ideally shouldn't need to be MonadRandom
 
@@ -519,10 +523,11 @@ callseq vm txSeq = do
       eventDiffs = extractEventValues env.dapp vm vm'
       -- union the return results with the new addresses
       additions = Map.unionsWith Set.union [resultMap, eventDiffs, diffs]
+      boundedAdditions = fmap (Set.map (boundAbiValueWithBound workerState.genDict.dynamicArrayBound)) additions
       -- append to the constants dictionary
       updatedDict = workerState.genDict
-        { constants = Map.unionWith Set.union workerState.genDict.constants additions
-        , dictValues = Set.union (mkDictValues $ Set.unions $ Map.elems additions)
+        { constants = Map.unionWith Set.union workerState.genDict.constants boundedAdditions
+        , dictValues = Set.union (mkDictValues $ Set.unions $ Map.elems boundedAdditions)
                                  workerState.genDict.dictValues
         }
 

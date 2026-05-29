@@ -4,7 +4,7 @@ import Control.Monad.Random.Strict (MonadRandom, getRandomR, weighted)
 import Data.Set qualified as Set
 
 import Echidna.Mutator.Array
-import Echidna.Transaction (mutateTx, shrinkTx)
+import Echidna.Transaction (boundTxsWithBound, mutateTxWithBound, shrinkTx)
 import Echidna.Types (MutationConsts)
 import Echidna.Types.Corpus
 import Echidna.Types.Tx (Tx)
@@ -29,13 +29,13 @@ data CorpusMutation = RandomAppend TxsMutation
                     | RandomInterleave
   deriving (Eq, Ord, Show)
 
-mutator :: MonadRandom m => TxsMutation -> [Tx] -> m [Tx]
-mutator Identity  = return
-mutator Shrinking = mapM shrinkTx
-mutator Mutation = mapM mutateTx
-mutator Expansion = expandRandList
-mutator Swapping = swapRandList
-mutator Deletion = deleteRandList
+mutator :: MonadRandom m => Maybe Int -> TxsMutation -> [Tx] -> m [Tx]
+mutator _ Identity  = return
+mutator _ Shrinking = mapM shrinkTx
+mutator dynamicArrayBound Mutation = mapM (mutateTxWithBound dynamicArrayBound)
+mutator _ Expansion = expandRandList
+mutator _ Swapping = swapRandList
+mutator _ Deletion = deleteRandList
 
 selectAndMutate
   :: MonadRandom m
@@ -69,21 +69,28 @@ selectFromCorpus =
 
 getCorpusMutation
   :: MonadRandom m
-  => CorpusMutation
+  => Maybe Int
+  -> CorpusMutation
   -> (Int -> Corpus -> [Tx] -> m [Tx])
-getCorpusMutation (RandomAppend m) = mut (mutator m)
+getCorpusMutation dynamicArrayBound (RandomAppend m) = mut (mutator dynamicArrayBound m)
   where
     mut f ql ctxs gtxs = do
       rtxs' <- selectAndMutate f ctxs
-      pure . take ql $ rtxs' ++ gtxs
-getCorpusMutation (RandomPrepend m) = mut (mutator m)
+      pure . boundTxsWithBound dynamicArrayBound . take ql $ rtxs' ++ gtxs
+getCorpusMutation dynamicArrayBound (RandomPrepend m) = mut (mutator dynamicArrayBound m)
   where
     mut f ql ctxs gtxs = do
       rtxs' <- selectAndMutate f ctxs
       k <- getRandomR (0, ql - 1)
-      pure . take ql $ take k gtxs ++ rtxs'
-getCorpusMutation RandomSplice = selectAndCombine spliceAtRandom
-getCorpusMutation RandomInterleave = selectAndCombine interleaveAtRandom
+      pure . boundTxsWithBound dynamicArrayBound . take ql $ take k gtxs ++ rtxs'
+getCorpusMutation dynamicArrayBound RandomSplice = boundAndCombine spliceAtRandom
+  where
+    boundAndCombine f ql ctxs gtxs =
+      boundTxsWithBound dynamicArrayBound <$> selectAndCombine f ql ctxs gtxs
+getCorpusMutation dynamicArrayBound RandomInterleave = boundAndCombine interleaveAtRandom
+  where
+    boundAndCombine f ql ctxs gtxs =
+      boundTxsWithBound dynamicArrayBound <$> selectAndCombine f ql ctxs gtxs
 
 seqMutatorsStateful
   :: MonadRandom m
