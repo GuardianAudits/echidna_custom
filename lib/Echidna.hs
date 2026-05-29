@@ -98,7 +98,8 @@ prepareContract cfg solFiles buildOutput selectedContract seed = do
         Payable -> Just (name, map snd inputs)
         NonPayable -> Just (name, map snd inputs))
       . Map.elems . (\ (SolcContract {abiMap}) -> abiMap)) deployedSolcContracts
-    dict = mkGenDict env.cfg.campaignConf.dictFreq
+    dict = mkGenDictWithBound env.cfg.campaignConf.maxDynamicArrayLength
+                     env.cfg.campaignConf.dictFreq
                      -- make sure we don't use cheat codes to form fuzzing call sequences
                      (Set.delete (AbiAddress $ forceAddr cheatCode) constants)
                      Set.empty

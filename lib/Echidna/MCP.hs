@@ -607,6 +607,7 @@ runConfig Env{cfg = EConfig{campaignConf = c}} = do
         , coverageLineHits = coverageLineHits'
         , logicalCoverage = logicalCoverage'
         , logicalCoverageTopN = logicalCoverageTopN'
+        , maxDynamicArrayLength = maxDynamicArrayLength'
         } = c
   pure $ object
     [ "testLimit" .= testLimit'
@@ -618,6 +619,7 @@ runConfig Env{cfg = EConfig{campaignConf = c}} = do
     , "coverageLineHits" .= coverageLineHits'
     , "logicalCoverage" .= logicalCoverage'
     , "logicalCoverageTopN" .= logicalCoverageTopN'
+    , "maxDynamicArrayLength" .= maxDynamicArrayLength'
     ]
 
 runTests :: Env -> IO Value

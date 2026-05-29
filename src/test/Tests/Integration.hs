@@ -9,25 +9,28 @@ import Control.Monad.Reader (ReaderT, runReaderT)
 import Data.Functor ((<&>))
 import Data.IORef (readIORef)
 import Data.List.NonEmpty (NonEmpty(..))
+import Data.Set qualified as Set
 import Data.Text (pack, unpack)
+import Data.Vector qualified as V
 import System.Random (mkStdGen)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase)
 
-import EVM.ABI (AbiValue(..))
+import EVM.ABI (AbiType(..), AbiValue(..))
 import EVM.Types (VM, VMType(Concrete))
 
 import Common (testContract, testContractV, solcV, testContract', checkConstructorConditions, passed, solved, solvedLen, solvedWith, solvedWithout, overrideQuiet)
 import Echidna (prepareContract)
-import Echidna.ABI (emptyDict, genInteractionsM)
+import Echidna.ABI (emptyDict, genInteractionsM, mkGenDictWithBound, mutateAbiCallWithBound)
 import Echidna.Campaign (runWorker)
 import Echidna.Config (parseConfig)
 import Echidna.Exec (execTx)
+import Echidna.Mutator.Corpus (CorpusMutation(..), getCorpusMutation)
 import Echidna.Solidity (compileContracts)
 import Echidna.Test (checkETest)
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config (Env(..), EConfig(..), EConfigWithUsage(..))
-import Echidna.Types.Signature (ContractName, WeightedSignature(..))
+import Echidna.Types.Signature (ContractName, SolCall, WeightedSignature(..))
 import Echidna.Types.Solidity (SolException(..))
 import Echidna.Types.Test (EchidnaTest(..), TestType(..), TestValue(..), didFail)
 import Echidna.Types.Tx (Tx(..), TxCall(..))
@@ -148,6 +151,66 @@ integrationTests = testGroup "Solidity Integration Testing"
           lightCount = length [() | ("light", _) <- calls]
       assertBool ("expected heavy calls to dominate, got " ++ show (heavyCount, lightCount)) $
         heavyCount > lightCount
+  , testCase "dynamic arrays are capped at 20 by default" $ do
+      calls <- evalRandT (replicateM 256 (genInteractionsM emptyDict arraySignature)) (mkStdGen 7)
+      let lengths = callArrayLengths calls
+      assertBool ("expected dynamic arrays <= 20, got " ++ show lengths) $
+        all (<= 20) lengths
+  , testCase "configured dynamic array cap applies recursively" $ do
+      let dict = mkGenDictWithBound (Just 5) 0 Set.empty Set.empty 0 (const Nothing) []
+          weightedSignatures =
+            WeightedSignature
+              { signature = ("takesNestedArray", [AbiArrayDynamicType (AbiArrayDynamicType (AbiUIntType 256))])
+              , qualifiedSignature = pack "Test.takesNestedArray(uint256[][])"
+              , weight = 1
+              }
+            :| []
+      calls <- evalRandT (replicateM 256 (genInteractionsM dict weightedSignatures)) (mkStdGen 8)
+      let lengths =
+            [ length outer
+            | ("takesNestedArray", [AbiArrayDynamic _ outer]) <- calls
+            ] <>
+            [ length inner
+            | ("takesNestedArray", [AbiArrayDynamic _ outer]) <- calls
+            , AbiArrayDynamic _ inner <- V.toList outer
+            ]
+      assertBool ("expected nested dynamic arrays <= 5, got " ++ show lengths) $
+        all (<= 5) lengths
+  , testCase "null dynamic array cap preserves legacy larger generation" $ do
+      let dict = mkGenDictWithBound Nothing 0 Set.empty Set.empty 0 (const Nothing) []
+      calls <- evalRandT (replicateM 512 (genInteractionsM dict arraySignature)) (mkStdGen 11)
+      let lengths = callArrayLengths calls
+      assertBool ("expected at least one legacy-sized array > 20, got " ++ show lengths) $
+        any (> 20) lengths
+  , testCase "dictionary calls and call mutation respect dynamic array cap" $ do
+      let dict = mkGenDictWithBound (Just 20)
+                                    1
+                                    Set.empty
+                                    (Set.singleton ("takesArray", [bigArray 40]))
+                                    0
+                                    (const Nothing)
+                                    []
+      calls <- evalRandT (replicateM 32 (genInteractionsM dict arraySignature)) (mkStdGen 12)
+      mutated <- evalRandT (replicateM 32 (mutateAbiCallWithBound (Just 20) ("takesArray", [bigArray 40]))) (mkStdGen 13)
+      let lengths = callArrayLengths (calls <> mutated)
+      assertBool ("expected dictionary and mutated arrays <= 20, got " ++ show lengths) $
+        all (<= 20) lengths
+  , testCase "corpus mutations bound dynamic arrays" $ do
+      let tx = Tx
+            { call = SolCall ("takesArray", [bigArray 40])
+            , src = 1
+            , dst = 2
+            , gas = 0
+            , gasprice = 0
+            , value = 0
+            , delay = (0, 0)
+            }
+          corpus = Set.singleton (1, [tx])
+          mutate = getCorpusMutation (Just 20) RandomSplice
+      txSeqs <- evalRandT (replicateM 32 (mutate 1 corpus [])) (mkStdGen 14)
+      let lengths = concatMap txArrayLengths txSeqs
+      assertBool ("expected corpus arrays <= 20, got " ++ show lengths) $
+        all (<= 20) lengths
   , testCase "functionWeights reject unknown signatures" $
       assertPrepareContractFailure "basic/flags.sol" Nothing "basic/function-weights-unknown.yaml" $
         \case
@@ -161,6 +224,28 @@ integrationTests = testGroup "Solidity Integration Testing"
   , testCase "functionWeights support allContracts mode" $
       void $ prepareContractWithConfig "basic/allContracts.sol" (Just $ pack "B") "basic/allContracts-weighted.yaml"
   ]
+
+arraySignature :: NonEmpty WeightedSignature
+arraySignature =
+  WeightedSignature
+    { signature = ("takesArray", [AbiArrayDynamicType (AbiUIntType 256)])
+    , qualifiedSignature = pack "Test.takesArray(uint256[])"
+    , weight = 1
+    }
+  :| []
+
+bigArray :: Int -> AbiValue
+bigArray n =
+  AbiArrayDynamic (AbiUIntType 256) $
+    V.fromList [AbiUInt 256 (fromIntegral i) | i <- [1..n]]
+
+callArrayLengths :: [SolCall] -> [Int]
+callArrayLengths calls =
+  [ length xs | ("takesArray", [AbiArrayDynamic _ xs]) <- calls ]
+
+txArrayLengths :: [Tx] -> [Int]
+txArrayLengths txs =
+  [ length xs | Tx { call = SolCall ("takesArray", [AbiArrayDynamic _ xs]) } <- txs ]
 
 prepareContractWithConfig :: FilePath -> Maybe ContractName -> FilePath -> IO ()
 prepareContractWithConfig contractPath selectedContract configPath = do

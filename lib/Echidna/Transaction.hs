@@ -152,13 +152,24 @@ shrinkTx tx =
       ]
   in join $ usuallyRarely (join (uniform possibilities)) (pure $ removeCallTx tx)
 
+boundTxWithBound :: Maybe Int -> Tx -> Tx
+boundTxWithBound dynamicArrayBound tx@Tx{call = SolCall c} =
+  tx { call = SolCall $ boundAbiCallWithBound dynamicArrayBound c }
+boundTxWithBound _ tx = tx
+
+boundTxsWithBound :: Maybe Int -> [Tx] -> [Tx]
+boundTxsWithBound dynamicArrayBound = map (boundTxWithBound dynamicArrayBound)
+
 mutateTx :: (MonadRandom m) => Tx -> m Tx
-mutateTx tx@Tx{call = SolCall c} = do
+mutateTx = mutateTxWithBound Nothing
+
+mutateTxWithBound :: (MonadRandom m) => Maybe Int -> Tx -> m Tx
+mutateTxWithBound dynamicArrayBound tx@Tx{call = SolCall c} = do
   f <- oftenUsually skip mutate
   f c
-  where mutate z = mutateAbiCall z >>= \c' -> pure tx { call = SolCall c' }
+  where mutate z = mutateAbiCallWithBound dynamicArrayBound z >>= \c' -> pure tx { call = SolCall c' }
         skip _ = pure tx
-mutateTx tx = pure tx
+mutateTxWithBound _ tx = pure tx
 
 -- | Given a 'Transaction', set up some 'VM' so it can be executed. Effectively, this just brings
 -- 'Transaction's \"on-chain\".

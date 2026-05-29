@@ -71,6 +71,7 @@ import Echidna.Recent
   , pruneRecentBy
   , sizeRecent
   )
+import Echidna.Transaction (boundTxsWithBound)
 import Echidna.Worker (getNWorkers)
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config
@@ -654,13 +655,15 @@ validateIngest mode vm txs =
 
 -- | Insert into the in-memory corpus and persist to disk if corpusDir is set.
 admitToCorpus :: Env -> EntryMeta -> [Tx] -> IO ()
-admitToCorpus env meta txs = do
+admitToCorpus env _meta txs = do
+  let boundedTxs = boundTxsWithBound env.cfg.campaignConf.maxDynamicArrayLength txs
+      boundedEntryId = entryIdForTxs boundedTxs
   let w = case env.cfg.corpusSyncConf.ingest.weightPolicy of
         CorpusSyncWeightConstant -> env.cfg.corpusSyncConf.ingest.constantWeight
         _ -> env.cfg.corpusSyncConf.ingest.constantWeight
 
   atomicModifyIORef' env.corpusRef $ \corp ->
-    let corp' = Set.insert (w, txs) corp
+    let corp' = Set.insert (w, boundedTxs) corp
     in (corp', ())
 
   case env.cfg.campaignConf.corpusDir of
@@ -668,10 +671,10 @@ admitToCorpus env meta txs = do
     Just dir -> do
       let outDir = dir </> "coverage"
       createDirectoryIfMissing True outDir
-      let file = outDir </> T.unpack meta.entryId <.> "txt"
+      let file = outDir </> T.unpack boundedEntryId <.> "txt"
       exists <- doesFileExist file
       unless exists $ do
-        LBS.writeFile file (encode txs)
+        LBS.writeFile file (encode boundedTxs)
         pushCampaignEvent env (ReproducerSaved file)
 
 -- | Origin instances delay stop until shrink is done.

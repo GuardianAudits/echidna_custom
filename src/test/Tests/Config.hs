@@ -83,6 +83,24 @@ configTests = testGroup "Configuration tests" $
       assertBool "saveEvery should be 5" $ config.campaignConf.saveEvery == Just 5
   , testCase "saveEvery defaults to Nothing" $
       assertBool "" $ isNothing (defaultConfig.campaignConf.saveEvery)
+  , testCase "parse maxDynamicArrayLength" $
+      case Y.decodeEither' "maxDynamicArrayLength: 7\n" of
+        Right (cfg :: EConfigWithUsage) ->
+          assertBool "maxDynamicArrayLength should parse" $
+            cfg.econfig.campaignConf.maxDynamicArrayLength == Just 7
+        Left err -> assertFailure $ "unexpected decoding error: " <> show err
+  , testCase "maxDynamicArrayLength null preserves legacy behavior" $
+      case Y.decodeEither' "maxDynamicArrayLength: null\n" of
+        Right (cfg :: EConfigWithUsage) ->
+          assertBool "maxDynamicArrayLength should be unbounded" $
+            isNothing cfg.econfig.campaignConf.maxDynamicArrayLength
+        Left err -> assertFailure $ "unexpected decoding error: " <> show err
+  , testCase "maxDynamicArrayLength defaults to 20" $
+      assertBool "" $ defaultConfig.campaignConf.maxDynamicArrayLength == Just 20
+  , testCase "maxDynamicArrayLength must be positive" $
+      case Y.decodeEither' "maxDynamicArrayLength: 0\n" of
+        Right (_ :: EConfigWithUsage) -> assertFailure "should not decode"
+        Left _ -> pure ()
   , testCase "default.yaml" $ do
       EConfigWithUsage _ bad unset <- parseConfig "basic/default.yaml"
       assertBool ("unused options: " ++ show bad) $ null bad
