@@ -298,6 +298,15 @@ dumpVMStats label vm = do
       , "recordedStorageReads=" <> show (length vm.tx.subState.recordedStorageReads)
       , "recordedStorageWrites=" <> show (length vm.tx.subState.recordedStorageWrites)
       , "tracesEnabled=" <> show vm.traceEnabled
+      , "forkCount=" <> show forkCount
+      , "forkContracts=" <> show forkContracts
+      , "forkStorageSlots=" <> show forkConcreteSlots
+      , "snapshotCount=" <> show snapshotCount
+      , "snapshotContracts=" <> show snapshotContracts
+      , "snapshotStorageSlots=" <> show snapshotConcreteSlots
+      , "snapshotLogs=" <> show snapshotLogs
+      , "snapshotTraceNodes=" <> show snapshotTraceNodes
+      , "snapshotForks=" <> show snapshotForks
       ]
     _ -> pure ()
   where
@@ -311,11 +320,36 @@ dumpVMStats label vm = do
         | c <- contracts
         ]
     txRevEntries = Map.size vm.tx.txReversion.reversionOriginals
+    forkCount = length vm.forks
+    (forkContracts, forkConcreteSlots, _, _) =
+      foldl addEnvStats (0, 0, 0, 0) ((.env) <$> toList vm.forks)
+    snapshotCount = Map.size vm.snapshots
+    (snapshotContracts, snapshotConcreteSlots, _, _) =
+      foldl addEnvStats (0, 0, 0, 0) ((.snapEnv) <$> Map.elems vm.snapshots)
+    snapshotLogs = sum $ length . (.snapLogs) <$> Map.elems vm.snapshots
+    snapshotTraceNodes = sum $ countTraceNodes . traceForestFromZipper . (.snapTraces) <$> Map.elems vm.snapshots
+    snapshotForks = sum $ length . (.snapForks) <$> Map.elems vm.snapshots
+
+    addEnvStats (n, c, s, a) e =
+      let cs = Map.elems e.contracts
+          (c', s', a') =
+            foldl addStats (0, 0, 0)
+              [ addStats (storageMeasure contract.storage)
+                  (addStats (storageMeasure contract.origStorage) (storageMeasure contract.tStorage))
+              | contract <- cs
+              ]
+      in (n + length cs, c + c', s + s', a + a')
 
 countTraceNodes :: Forest a -> Int
 countTraceNodes = sum . fmap countTreeNodes
   where
     countTreeNodes (Node _ children) = 1 + countTraceNodes children
+
+traceForestFromZipper :: Zipper.TreePos Zipper.Empty a -> Forest a
+traceForestFromZipper z =
+  case Zipper.parent z of
+    Nothing -> Zipper.toForest z
+    Just z' -> traceForestFromZipper (Zipper.nextSpace z')
 
 addStats :: (Int, Int, Int) -> (Int, Int, Int) -> (Int, Int, Int)
 addStats (a, b, c) (x, y, z) = (a + x, b + y, c + z)
