@@ -151,6 +151,10 @@ execTxWith executeTx tx = do
     config <- asks (.cfg)
     #traceEnabled .= config.allEvents
     when (not config.allEvents) $ #traces .= emptyEvents
+    -- Receipt logs are only needed for the current top-level transaction.
+    -- Keeping setup and previous-tx logs in every VM copy makes large setup
+    -- suites retain and compare stale event payloads across all workers.
+    #logs .= []
     vmBeforeTx <- get
     setupTx tx
     case tx.call of
