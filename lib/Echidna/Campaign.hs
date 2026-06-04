@@ -501,7 +501,7 @@ callseq vm txSeq = do
   newCoverage <- gets (.newCoverage)
   when newCoverage $ do
     ncallseqs <- gets (.ncallseqs)
-    let coverageTxs = txExecTx <$> results
+    let coverageTxs = (.txExecTx) <$> results
     -- Even if this takes a bit of time, this is okay as finding new coverage
     -- is expected to be infrequent in the long term
     newSize <- liftIO $ atomicModifyIORef' env.corpusRef $ \corp ->
@@ -587,7 +587,7 @@ callseq vm txSeq = do
   addToCorpus :: Int -> [TxExecSummary] -> Corpus -> Corpus
   addToCorpus n res corpus =
     if null rtxs then corpus else Set.insert (n, rtxs) corpus
-    where rtxs = txExecTx <$> res
+    where rtxs = (.txExecTx) <$> res
 
 -- | Execute a transaction, capturing the PC and codehash of each instruction
 -- executed, saving the transaction if it finds new coverage.
