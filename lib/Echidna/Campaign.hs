@@ -14,6 +14,7 @@ import Control.Monad.State.Strict
   (MonadState(..), StateT(..), gets, MonadIO, modify')
 import Control.Monad.Trans (lift)
 import Data.Binary.Get (runGetOrFail)
+import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Foldable (foldlM)
 import Data.IORef (readIORef, atomicModifyIORef', writeIORef)
@@ -60,12 +61,17 @@ import Echidna.Types.Random (rElem)
 import Echidna.Types.Signature (FunctionName)
 import Echidna.Types.Test
 import Echidna.Types.Test qualified as Test
-import Echidna.Types.Tx (TxCall(..), Tx(..))
+import Echidna.Types.Tx (TxCall(..), Tx(..), getResult)
 import Echidna.Types.Worker
 import Echidna.Worker
 
 instance MonadThrow m => MonadThrow (RandT g m) where
   throwM = lift . throwM
+
+data TxExecSummary = TxExecSummary
+  { txExecTx :: !Tx
+  , txExecReturnBuf :: !(Maybe ByteString)
+  }
 
 -- | Given a 'Campaign', check if the test results should be reported as a
 -- success or a failure.
@@ -495,7 +501,7 @@ callseq vm txSeq = do
   newCoverage <- gets (.newCoverage)
   when newCoverage $ do
     ncallseqs <- gets (.ncallseqs)
-    let coverageTxs = fst <$> results
+    let coverageTxs = txExecTx <$> results
     -- Even if this takes a bit of time, this is okay as finding new coverage
     -- is expected to be infrequent in the long term
     newSize <- liftIO $ atomicModifyIORef' env.corpusRef $ \corp ->
@@ -548,30 +554,29 @@ callseq vm txSeq = do
   -- know the return type for each function called. If yes, try to parse the
   -- return value as a value of that type. Returns a 'GenDict' style Map.
   returnValues
-    :: [(Tx, VMResult Concrete)]
+    :: [TxExecSummary]
     -> (FunctionName -> Maybe AbiType)
     -> Map AbiType (Set AbiValue)
   returnValues txResults returnTypeOf =
     Map.unionsWith Set.union . mapMaybe extractValues $ txResults
     where
-      extractValues (tx, result) = case result of
-        VMSuccess (ConcreteBuf buf) -> do
-          fname <- case tx.call of
-            SolCall (fname, _) -> Just fname
-            _ -> Nothing
-          type' <- returnTypeOf fname
-          case runGetOrFail (getAbi type') (LBS.fromStrict buf) of
-            Right (_, _, abiValue) ->
-              if isTuple type'
-                then Just $ Map.fromListWith Set.union
-                      [ (abiValueType val, Set.singleton val)
-                      | val <- filter (/= AbiAddress (forceAddr cheatCode)) $ V.toList $ getTupleVector abiValue
-                      ]
-                else if abiValue /= AbiAddress (forceAddr cheatCode)
-                  then Just $ Map.singleton type' (Set.singleton abiValue)
-                  else Nothing
-            _ -> Nothing
-        _ -> Nothing
+      extractValues TxExecSummary { txExecTx = tx, txExecReturnBuf = Just buf } = do
+        fname <- case tx.call of
+          SolCall (fname, _) -> Just fname
+          _ -> Nothing
+        type' <- returnTypeOf fname
+        case runGetOrFail (getAbi type') (LBS.fromStrict buf) of
+          Right (_, _, abiValue) ->
+            if isTuple type'
+              then Just $ Map.fromListWith Set.union
+                    [ (abiValueType val, Set.singleton val)
+                    | val <- filter (/= AbiAddress (forceAddr cheatCode)) $ V.toList $ getTupleVector abiValue
+                    ]
+              else if abiValue /= AbiAddress (forceAddr cheatCode)
+                then Just $ Map.singleton type' (Set.singleton abiValue)
+                else Nothing
+          _ -> Nothing
+      extractValues _ = Nothing
 
       isTuple (AbiTupleType _) = True
       isTuple _ = False
@@ -579,10 +584,10 @@ callseq vm txSeq = do
       getTupleVector _ = error "Not a tuple!"
 
   -- | Add transactions to the corpus, discarding reverted ones
-  addToCorpus :: Int -> [(Tx, VMResult Concrete)] -> Corpus -> Corpus
+  addToCorpus :: Int -> [TxExecSummary] -> Corpus -> Corpus
   addToCorpus n res corpus =
     if null rtxs then corpus else Set.insert (n, rtxs) corpus
-    where rtxs = fst <$> res
+    where rtxs = txExecTx <$> res
 
 -- | Execute a transaction, capturing the PC and codehash of each instruction
 -- executed, saving the transaction if it finds new coverage.
@@ -608,7 +613,7 @@ evalSeq
   => VM Concrete -- ^ Initial VM
   -> (VM Concrete -> Tx -> m (VMResult Concrete, VM Concrete))
   -> [Tx]
-  -> m ([(Tx, VMResult Concrete)], VM Concrete)
+  -> m ([TxExecSummary], VM Concrete)
 evalSeq vm0 execFunc = go vm0 [] [] where
   go !vm !executedSoFar !resultsRev toExecute = do
     env <- ask
@@ -653,8 +658,15 @@ evalSeq vm0 execFunc = go vm0 [] [] where
           -- NOTE: we don't use the intermediate VMs, just the last one. If any of
           -- the intermediate VMs are needed, they can be put next to the result
           -- of each transaction - `m ([(Tx, result, VM)])`
-          let !resultEntry = (tx, result)
+          let !resultEntry = summarizeResult tx result
           go vm' (tx:executedSoFar) (resultEntry:resultsRev) remainingTxs
+
+  summarizeResult tx result =
+    let !_txResult = getResult result
+        !returnBuf = case result of
+          VMSuccess (ConcreteBuf buf) -> Just buf
+          _ -> Nothing
+    in TxExecSummary tx returnBuf
 
 -- | Update tests based on the return value from the given function.
 -- Nothing skips the update.
