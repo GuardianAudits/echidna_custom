@@ -210,7 +210,7 @@ setupTx tx@Tx{call} = fromEVM $ do
         reversionState = EVM.Transaction.setupTx vm.tx.origin vm.block.coinbase vm.tx.gasprice vm.tx.gaslimit vm.env.contracts
     in vm & #state % #gas %!~ subtract burned
           & #burned %!~ (+ burned)
-          & #tx % #txReversion !~ reversionState
+          & #tx % #txReversion !~ initialReversion reversionState
   where
     incrementBalance = #env % #contracts % ix (LitAddr tx.dst) % #balance %= (\v -> Lit $ forceWord v + tx.value)
     encode (n, vs) = abiCalldata (encodeSig (n, abiValueType <$> vs)) $ V.fromList vs

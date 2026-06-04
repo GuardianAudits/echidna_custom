@@ -4,8 +4,10 @@ import Control.Monad (when, unless, forM_)
 import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.Extra (whenM)
 import Control.Monad.Reader (ReaderT(runReaderT))
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.ST (stToIO)
 import Control.Monad.State (runStateT)
+import Data.ByteString qualified as BS
 import Data.Foldable (toList)
 import Data.List (find, partition, isSuffixOf, (\\))
 import Data.List.NonEmpty (NonEmpty((:|)))
@@ -18,9 +20,11 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text, isPrefixOf, isSuffixOf, append)
 import Data.Text qualified as T
+import Data.Vector qualified as V
 import Optics.Core hiding (filtered)
 import System.Directory
   (doesDirectoryExist, doesFileExist, findExecutable, listDirectory, removeFile)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode(..))
 import System.FilePath (joinPath, splitDirectories, (</>))
 import System.FilePath.Posix qualified as FPP
@@ -255,10 +259,53 @@ loadSpecified env mainContract cs = do
 
     case vm4.result of
       Just (VMFailure _) -> throwM SetUpCallFailed
-      _ -> pure vm4
+      _ -> liftIO (dumpVMStats "post-loadSpecified" vm4) >> pure vm4
 
   where
     setUpFunction = ("setUp", [])
+
+dumpVMStats :: String -> VM Concrete -> IO ()
+dumpVMStats label vm = do
+  lookupEnv "ECHIDNA_VM_STATS" >>= \case
+    Just "1" -> putStrLn $ unlines
+      [ "[vm-stats] " <> label
+      , "contracts=" <> show contractCount
+      , "codeBytes=" <> show codeBytes
+      , "concreteStorageSlots=" <> show concreteSlots
+      , "sstoreNodes=" <> show sstoreNodes
+      , "abstractStores=" <> show abstractStores
+      , "txReversionEntries=" <> show txRevEntries
+      , "tracesEnabled=" <> show vm.traceEnabled
+      ]
+    _ -> pure ()
+  where
+    contracts = Map.elems vm.env.contracts
+    contractCount = length contracts
+    codeBytes = sum $ fmap (contractCodeBytes . (.code)) contracts
+    (concreteSlots, sstoreNodes, abstractStores) =
+      foldl addStats (0, 0, 0)
+        [ addStats (storageMeasure c.storage)
+            (addStats (storageMeasure c.origStorage) (storageMeasure c.tStorage))
+        | c <- contracts
+        ]
+    txRevEntries = Map.size vm.tx.txReversion.reversionOriginals
+
+addStats :: (Int, Int, Int) -> (Int, Int, Int) -> (Int, Int, Int)
+addStats (a, b, c) (x, y, z) = (a + x, b + y, c + z)
+
+contractCodeBytes :: ContractCode -> Int
+contractCodeBytes = \case
+  UnknownCode _ -> 0
+  InitCode bs _ -> BS.length bs
+  RuntimeCode (ConcreteRuntimeCode bs) -> BS.length bs
+  RuntimeCode (SymbolicRuntimeCode ops) -> V.length ops
+
+storageMeasure :: Expr Storage -> (Int, Int, Int)
+storageMeasure = \case
+  ConcreteStore m -> (Map.size m, 0, 0)
+  AbstractStore {} -> (0, 0, 1)
+  SStore _ _ prev -> let (c, s, a) = storageMeasure prev in (c, s + 1, a)
+  _ -> (0, 0, 0)
 
 
 selectMainContract

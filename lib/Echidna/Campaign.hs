@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Echidna.Campaign where
 
@@ -608,19 +609,19 @@ evalSeq
   -> (VM Concrete -> Tx -> m (VMResult Concrete, VM Concrete))
   -> [Tx]
   -> m ([(Tx, VMResult Concrete)], VM Concrete)
-evalSeq vm0 execFunc = go vm0 [] where
-  go vm executedSoFar toExecute = do
+evalSeq vm0 execFunc = go vm0 [] [] where
+  go !vm !executedSoFar !resultsRev toExecute = do
     env <- ask
     shouldStop <- liftIO $ mcpCheckpoint env
     if shouldStop then
-      pure ([], vm)
+      pure (reverse resultsRev, vm)
     else do
       -- NOTE: we do reverse here because we build up this list by prepending,
       -- see the last line of this function.
       updateTests (updateOpenTest vm (reverse executedSoFar))
       modify' $ \workerState -> workerState { ncalls = workerState.ncalls + 1 }
       case toExecute of
-        [] -> pure ([], vm)
+        [] -> pure (reverse resultsRev, vm)
         (tx:remainingTxs) -> do
           (result, vm') <- execFunc vm tx
           forM_ env.mcpState $ \st -> recordTx st vm' tx result
@@ -645,13 +646,15 @@ evalSeq vm0 execFunc = go vm0 [] where
             modify' setWorkerLogicalCoverage
             wid <- gets (.workerId)
             forM_ env.mcpState $ \st -> recordLogicalCoverage st wid updated
-          modify' $ \workerState -> workerState
-            { totalGas = workerState.totalGas + fromIntegral (vm'.burned - vm.burned) }
+          let !gasDelta = fromIntegral (vm'.burned - vm.burned)
+          modify' $ \workerState ->
+            let !totalGas' = workerState.totalGas + gasDelta
+            in workerState { totalGas = totalGas' }
           -- NOTE: we don't use the intermediate VMs, just the last one. If any of
           -- the intermediate VMs are needed, they can be put next to the result
           -- of each transaction - `m ([(Tx, result, VM)])`
-          (remaining, vm'') <- go vm' (tx:executedSoFar) remainingTxs
-          pure ((tx, result) : remaining, vm'')
+          let !resultEntry = (tx, result)
+          go vm' (tx:executedSoFar) (resultEntry:resultsRev) remainingTxs
 
 -- | Update tests based on the return value from the given function.
 -- Nothing skips the update.

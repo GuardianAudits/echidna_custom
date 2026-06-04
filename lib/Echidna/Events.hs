@@ -44,7 +44,7 @@ extractEvents decodeErrors dappInfo vm =
   where
   showTrace trace =
     let ?context = DappContext { info = dappInfo, contracts = vm.env.contracts, labels = vm.labels } in
-    let codehash' = fromJust $ maybeLitWordSimp trace.contract.codehash
+    let codehash' = fromJust $ maybeLitWordSimp trace.contract.traceContractCodehash
         maybeContractName = maybeContractNameFromCodeHash dappInfo codehash'
     in case trace.tracedata of
       EventTrace addr bytes (topic:_) ->

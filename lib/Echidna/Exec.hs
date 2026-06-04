@@ -149,6 +149,7 @@ execTxWith executeTx tx = do
     pure $ VMFailure (Revert (ConcreteBuf ""))
   else do
     config <- asks (.cfg)
+    #traceEnabled .= config.allEvents
     when (not config.allEvents) $ #traces .= emptyEvents
     vmBeforeTx <- get
     setupTx tx
@@ -158,6 +159,7 @@ execTxWith executeTx tx = do
         vmResult <- runFully
         handleErrorsAndConstruction vmResult vmBeforeTx
         fromEVM clearTStorages
+        #tx % #txReversion .= emptyReversion
         pure vmResult
   where
   runFully = do
