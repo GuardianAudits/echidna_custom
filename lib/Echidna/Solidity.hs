@@ -298,15 +298,26 @@ dumpVMStats label vm = do
       , "recordedStorageReads=" <> show (length vm.tx.subState.recordedStorageReads)
       , "recordedStorageWrites=" <> show (length vm.tx.subState.recordedStorageWrites)
       , "tracesEnabled=" <> show vm.traceEnabled
+      , "pathsVisited=" <> show (Map.size vm.pathsVisited)
+      , "iterations=" <> show (Map.size vm.iterations)
+      , "constraints=" <> show (length vm.constraints)
+      , "keccakPreImgs=" <> show keccakPreImgCount
+      , "keccakPreImgBytes=" <> show keccakPreImgBytes
+      , "freshVar=" <> show vm.freshVar
+      , "labels=" <> show (Map.size vm.labels)
       , "forkCount=" <> show forkCount
       , "forkContracts=" <> show forkContracts
       , "forkStorageSlots=" <> show forkConcreteSlots
+      , "forkPathsVisited=" <> show forkPathsVisited
       , "snapshotCount=" <> show snapshotCount
       , "snapshotContracts=" <> show snapshotContracts
       , "snapshotStorageSlots=" <> show snapshotConcreteSlots
       , "snapshotLogs=" <> show snapshotLogs
       , "snapshotTraceNodes=" <> show snapshotTraceNodes
       , "snapshotForks=" <> show snapshotForks
+      , "snapshotRecordedStorageReads=" <> show snapshotRecordedStorageReads
+      , "snapshotRecordedStorageWrites=" <> show snapshotRecordedStorageWrites
+      , "snapshotForkPathsVisited=" <> show snapshotForkPathsVisited
       ]
     _ -> pure ()
   where
@@ -320,15 +331,24 @@ dumpVMStats label vm = do
         | c <- contracts
         ]
     txRevEntries = Map.size vm.tx.txReversion.reversionOriginals
+    keccakPreImgCount = Set.size vm.keccakPreImgs
+    keccakPreImgBytes = sum $ BS.length . fst <$> Set.toList vm.keccakPreImgs
     forkCount = length vm.forks
     (forkContracts, forkConcreteSlots, _, _) =
       foldl addEnvStats (0, 0, 0, 0) ((.env) <$> toList vm.forks)
+    forkPathsVisited = sum $ Map.size . (.pathsVisited) <$> toList vm.forks
     snapshotCount = Map.size vm.snapshots
     (snapshotContracts, snapshotConcreteSlots, _, _) =
       foldl addEnvStats (0, 0, 0, 0) ((.snapEnv) <$> Map.elems vm.snapshots)
     snapshotLogs = sum $ length . (.snapLogs) <$> Map.elems vm.snapshots
     snapshotTraceNodes = sum $ countTraceNodes . traceForestFromZipper . (.snapTraces) <$> Map.elems vm.snapshots
     snapshotForks = sum $ length . (.snapForks) <$> Map.elems vm.snapshots
+    snapshotRecordedStorageReads =
+      sum $ length . (.recordedStorageReads) . (.snapTxSubState) <$> Map.elems vm.snapshots
+    snapshotRecordedStorageWrites =
+      sum $ length . (.recordedStorageWrites) . (.snapTxSubState) <$> Map.elems vm.snapshots
+    snapshotForkPathsVisited =
+      sum $ sum . fmap (Map.size . (.pathsVisited)) . toList . (.snapForks) <$> Map.elems vm.snapshots
 
     addEnvStats (n, c, s, a) e =
       let cs = Map.elems e.contracts
