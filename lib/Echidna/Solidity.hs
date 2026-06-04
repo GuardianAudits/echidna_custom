@@ -20,6 +20,8 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text, isPrefixOf, isSuffixOf, append)
 import Data.Text qualified as T
+import Data.Tree (Forest, Tree(..))
+import Data.Tree.Zipper qualified as Zipper
 import Data.Vector qualified as V
 import Optics.Core hiding (filtered)
 import System.Directory
@@ -32,7 +34,7 @@ import System.IO (openFile, IOMode(..))
 import System.Info (os)
 import System.Process (StdStream(..), readCreateProcessWithExitCode, proc, std_err)
 
-import EVM (initialContract, currentContract)
+import EVM (initialContract, currentContract, traceForest)
 import EVM.ABI
 import EVM.Effects (runApp)
 import EVM.Format (showTraceTree)
@@ -259,10 +261,25 @@ loadSpecified env mainContract cs = do
 
     case vm4.result of
       Just (VMFailure _) -> throwM SetUpCallFailed
-      _ -> liftIO (dumpVMStats "post-loadSpecified" vm4) >> pure vm4
+      _ -> do
+        let vm5 = clearStartupTransientState vm4
+        liftIO (dumpVMStats "post-loadSpecified" vm5)
+        pure vm5
 
   where
     setUpFunction = ("setUp", [])
+
+clearStartupTransientState :: VM Concrete -> VM Concrete
+clearStartupTransientState vm =
+  vm
+    { result = Nothing
+    , logs = []
+    , traces = Zipper.fromForest []
+    , tx = vm.tx
+        { subState = SubState mempty mempty mempty mempty mempty mempty False mempty mempty
+        , txReversion = emptyReversion
+        }
+    }
 
 dumpVMStats :: String -> VM Concrete -> IO ()
 dumpVMStats label vm = do
@@ -275,6 +292,11 @@ dumpVMStats label vm = do
       , "sstoreNodes=" <> show sstoreNodes
       , "abstractStores=" <> show abstractStores
       , "txReversionEntries=" <> show txRevEntries
+      , "logs=" <> show (length vm.logs)
+      , "traceNodes=" <> show (countTraceNodes (traceForest vm))
+      , "recordingStorageAccesses=" <> show vm.tx.subState.recordingStorageAccesses
+      , "recordedStorageReads=" <> show (length vm.tx.subState.recordedStorageReads)
+      , "recordedStorageWrites=" <> show (length vm.tx.subState.recordedStorageWrites)
       , "tracesEnabled=" <> show vm.traceEnabled
       ]
     _ -> pure ()
@@ -289,6 +311,11 @@ dumpVMStats label vm = do
         | c <- contracts
         ]
     txRevEntries = Map.size vm.tx.txReversion.reversionOriginals
+
+countTraceNodes :: Forest a -> Int
+countTraceNodes = sum . fmap countTreeNodes
+  where
+    countTreeNodes (Node _ children) = 1 + countTraceNodes children
 
 addStats :: (Int, Int, Int) -> (Int, Int, Int) -> (Int, Int, Int)
 addStats (a, b, c) (x, y, z) = (a + x, b + y, c + z)
