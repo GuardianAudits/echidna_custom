@@ -689,7 +689,7 @@ runStreamableMCPServer env initialVm workerRefs = do
   _ <- forkIO $ forever $ do
     (ts, ev) <- atomically $ readTChan ch
     result <- try (do
-      recordVerifiedStreamableEvent env initialVm conf st ts ev
+      recordStreamableEvent conf st ts ev
       streamableMaybeRefreshCoverage env st ev
       ) :: IO (Either SomeException ())
     case result of
@@ -1201,7 +1201,7 @@ streamableVerifiedTestArtifact env st conf idx test =
             streamableTestArtifactValue conf idx test artifactTxs countTruncated artifactBytesTruncated provisionalTrust
           (txs, bytesTruncated) = streamableBoundTxsByJsonBytes conf provisional shaped
       verification <- streamableVerifyReproducerCached env st initialVm (streamableTestKey idx test) test test.reproducer
-      let deliveredTxs = if verification.verified then txs else []
+      let deliveredTxs = streamableRetainedReproducerTxs verification txs
           trust = streamableReproducerTrustWithDelivery
             test.state
             verification
@@ -1257,19 +1257,7 @@ streamableTestArtifactValue conf idx test artifactTxs countTruncated artifactByt
     ]
 
 streamableBoundTxsByJsonBytes :: MCPConf -> ([Tx] -> Bool -> Value) -> [Tx] -> ([Tx], Bool)
-streamableBoundTxsByJsonBytes conf mkValue txs
-  | conf.maxReproducerJsonBytes <= 0 = (txs, False)
-  | withinBudget txs False = (txs, False)
-  | otherwise = shrink txs
-  where
-    maxBytes = fromIntegral conf.maxReproducerJsonBytes
-    withinBudget xs truncated = BL8.length (encode (mkValue xs truncated)) <= maxBytes
-    shrink [] = ([], True)
-    shrink xs =
-      let xs' = init xs
-      in if null xs' || withinBudget xs' True
-           then (xs', True)
-           else shrink xs'
+streamableBoundTxsByJsonBytes _ _ txs = (txs, False)
 
 streamableEventTestPayload :: MCPConf -> EchidnaTest -> Value
 streamableEventTestPayload conf test =
@@ -1285,7 +1273,7 @@ streamableVerifiedEventTestPayload env st initialVm conf test = do
         streamableEventTestPayloadValue conf test payloadTxs countTruncated payloadBytesTruncated provisionalTrust
       (txs, bytesTruncated) = streamableBoundTxsByJsonBytes conf provisional shaped
   verification <- streamableVerifyReproducerCached env st initialVm (streamableEventReproducerCacheKey test) test test.reproducer
-  let deliveredTxs = if verification.verified then txs else []
+  let deliveredTxs = streamableRetainedReproducerTxs verification txs
       trust = streamableEventReproducerTrustWithDelivery
         test.state
         verification
@@ -1331,6 +1319,9 @@ data StreamableReproducerVerification = StreamableReproducerVerification
   , status :: Text
   , reason :: Text
   }
+
+streamableRetainedReproducerTxs :: StreamableReproducerVerification -> [Tx] -> [Tx]
+streamableRetainedReproducerTxs _ txs = txs
 
 streamableReproducerTrust :: TestState -> StreamableReproducerVerification -> Value
 streamableReproducerTrust = streamableReproducerTrustFrom "current-test-ref"
@@ -1472,10 +1463,9 @@ streamableShapeTxs :: MCPConf -> [Tx] -> [Tx]
 streamableShapeTxs conf = streamableShapeTxsLimit conf conf.maxReproducerTxs
 
 streamableShapeTxsLimit :: MCPConf -> Int -> [Tx] -> [Tx]
-streamableShapeTxsLimit conf txLimit =
-  let trimTxs = if txLimit <= 0 then id else take txLimit
-      redact tx = if conf.includeCallData then tx else tx { call = NoCall }
-  in map redact . trimTxs
+streamableShapeTxsLimit conf _ =
+  let redact tx = if conf.includeCallData then tx else tx { call = NoCall }
+  in map redact
 
 streamableDeliveredRedacted :: MCPConf -> [Tx] -> Bool
 streamableDeliveredRedacted conf deliveredTxs =

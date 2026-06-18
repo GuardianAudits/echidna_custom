@@ -1,7 +1,7 @@
 module Tests.MCPParse (mcpParseTests) where
 
 import Control.Exception (ErrorCall, try)
-import Data.Aeson (Result(..), Value(..), encode, fromJSON, object, (.=))
+import Data.Aeson (Result(..), Value(..), fromJSON, object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString qualified as BS
@@ -47,6 +47,7 @@ import Echidna.MCP
   , recordStreamableEvent
   , streamableCacheableReproducerVerification
   , streamableCoverageLines
+  , streamableRetainedReproducerTxs
   , streamableStrictRequestBodyWithLimit
   )
 import Echidna.Types.Config (MCPConf(..), defaultMCPConf)
@@ -208,26 +209,22 @@ streamableResourceTests = testGroup "streamableResourcesList"
 
 streamablePayloadBoundTests :: TestTree
 streamablePayloadBoundTests = testGroup "streamable payload bounds"
-  [ testCase "snapshot trims reproducer transaction count" $ do
+  [ testCase "snapshot keeps full reproducer despite transaction count limit" $ do
       let conf = defaultMCPConf { maxReproducerTxs = 3, maxReproducerJsonBytes = 0, includeCallData = True }
           artifact = streamableTestArtifact conf 0 (mkStreamableTest 10)
-      objectArrayLength ["reproducer", "best"] artifact @?= Just 3
-      objectBool ["reproducer", "truncated"] artifact @?= Just True
-  , testCase "event payload uses event reproducer limit" $ do
+      objectArrayLength ["reproducer", "best"] artifact @?= Just 10
+      objectBool ["reproducer", "truncated"] artifact @?= Just False
+  , testCase "event payload keeps full reproducer despite event limit" $ do
       let conf = defaultMCPConf { reproducerEventsLimit = 2, maxReproducerJsonBytes = 0, includeCallData = True }
           payload = streamableWorkerPayload conf (Worker.TestFalsified (mkStreamableTest 10))
-      objectArrayLength ["reproducer"] payload @?= Just 2
-      objectBool ["truncated"] payload @?= Just True
-  , testCase "snapshot respects JSON byte budget" $ do
+      objectArrayLength ["reproducer"] payload @?= Just 10
+      objectBool ["truncated"] payload @?= Just False
+  , testCase "snapshot keeps full reproducer despite JSON byte budget" $ do
       let test = mkStreamableTest 10
-          loose = defaultMCPConf { maxReproducerTxs = 10, maxReproducerJsonBytes = 0, includeCallData = True }
           bounded = defaultMCPConf { maxReproducerTxs = 10, maxReproducerJsonBytes = 1200, includeCallData = True }
-          looseBytes = LBS.length . encode $ streamableTestArtifact loose 0 test
           artifact = streamableTestArtifact bounded 0 test
-          boundedBytes = LBS.length (encode artifact)
-      assertBool "expected bounded payload to be smaller" (boundedBytes < looseBytes)
-      assertBool "expected bounded payload to fit configured budget" (boundedBytes <= 1200)
-      objectBool ["reproducer", "truncated"] artifact @?= Just True
+      objectArrayLength ["reproducer", "best"] artifact @?= Just 10
+      objectBool ["reproducer", "truncated"] artifact @?= Just False
   ]
 
 streamableStatusTests :: TestTree
@@ -328,6 +325,22 @@ streamableReliabilityTests = testGroup "streamable MCP reliability"
       objectText ["reproducerTrust", "status"] payload @?= Just "unverified"
       objectBool ["reproducerTrust", "verified"] payload @?= Just False
       objectText ["reproducerTrust", "sourceOfTruth"] payload @?= Nothing
+  , testCase "retained falsification events include unverified reproducer txs" $ do
+      st <- mkStreamableState 10
+      let ts = read "2026-06-06 00:00:00" :: LocalTime
+          event = Worker.WorkerEvent 1 Worker.FuzzWorker (Worker.TestFalsified (mkStreamableTest 2))
+      recordStreamableEvent defaultMCPConf st ts event
+      StreamableEventBuffer _ items <- readIORef st.streamableEventsRef
+      case items of
+        [(_, ev)] -> do
+          ev.streamableEventType @?= "TestFalsified"
+          objectArrayLength ["reproducer"] ev.streamablePayload @?= Just 2
+          objectText ["reproducerTrust", "status"] ev.streamablePayload @?= Just "unverified"
+        _ -> assertFailure ("expected one retained event, got " <> show (length items))
+  , testCase "unverified replay does not blank retained reproducer txs" $ do
+      let txs = replicate 2 sampleTx
+          verification = StreamableReproducerVerification False "unverified" "replay-threw"
+      streamableRetainedReproducerTxs verification txs @?= txs
   , testCase "event payloads are forced before insertion" $ do
       st <- mkStreamableState 10
       let ts = read "2026-06-06 00:00:00" :: LocalTime
