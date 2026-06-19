@@ -23,11 +23,16 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Data.Word (Word64)
+import Network.Connection qualified as Connection
+import Network.HTTP.Client qualified as HTTP
+import Network.HTTP.Client.TLS qualified as HTTP_TLS
 import Network.HTTP.Simple (HttpException)
+import Network.TLS qualified as TLS
 import Network.Wreq.Session qualified as Session
 import Optics (view)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import System.X509 (getSystemCertificateStore)
 import Text.Read (readMaybe)
 
 import EVM (bytecode)
@@ -229,9 +234,30 @@ saveCoverageReport env runId = do
 fetchChainIdFrom :: [Text] -> IO (Maybe W256)
 fetchChainIdFrom [] = pure Nothing
 fetchChainIdFrom (url:rest) = do
-  sess <- Session.newAPISession
+  sess <- newRpcSession
   res <- EVM.Fetch.fetchQuery
     EVM.Fetch.Latest -- this shouldn't matter
     (EVM.Fetch.fetchWithSession url sess)
     EVM.Fetch.QueryChainId
   either (const $ fetchChainIdFrom rest) (pure . Just) res
+
+newRpcSession :: IO Session.Session
+newRpcSession = do
+  caStore <- getSystemCertificateStore
+  Session.newSessionControl Nothing (rpcManagerSettings caStore)
+
+rpcManagerSettings caStore =
+  HTTP_TLS.mkManagerSettings (Connection.TLSSettings (tls12ClientParams caStore)) Nothing
+
+tls12ClientParams caStore =
+  let params = TLS.defaultParamsClient "" BS.empty
+      shared = (TLS.clientShared params)
+        { TLS.sharedCAStore = caStore
+        }
+      supported = (TLS.clientSupported params)
+        { TLS.supportedVersions = [TLS.TLS12]
+        }
+  in params
+    { TLS.clientSupported = supported
+    , TLS.clientShared = shared
+    }

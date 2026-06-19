@@ -1,0 +1,70 @@
+diff --git a/hevm.cabal b/hevm.cabal
+index 6d7f154d..b3339c60 100644
+--- a/hevm.cabal
++++ b/hevm.cabal
+@@ -176,7 +176,12 @@ library
+     optparse-generic                  >= 1.3.1 && < 1.6,
+     pretty-hex                        >= 1.1 && < 1.2,
+     rosezipper                        >= 0.2 && < 0.3,
++    crypton-connection                >= 0.4 && < 0.5,
++    crypton-x509-system               >= 1.6 && < 1.7,
++    http-client                       >= 0.7 && < 0.8,
++    http-client-tls                   >= 0.3 && < 0.4,
+     wreq                              >= 0.5.3 && < 0.6,
++    tls                               >= 1.4 && < 2.2,
+     random                            >= 1.2 && < 1.3,
+     regex-tdfa                        >= 1.2.3 && < 1.4,
+     base                              >= 4.9 && < 5,
+diff --git a/src/EVM/Fetch.hs b/src/EVM/Fetch.hs
+index b98f06dd..1e1d3a2 100644
+--- a/src/EVM/Fetch.hs
++++ b/src/EVM/Fetch.hs
+@@ -74,5 +74,11 @@ import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_)
++import Data.ByteString qualified as BS
+ import Data.IORef (IORef, newIORef, readIORef, atomicModifyIORef')
+ import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime, addUTCTime)
+ import System.Random (randomRIO)
++import Network.Connection qualified as Connection
++import Network.HTTP.Client qualified as HTTP
++import Network.HTTP.Client.TLS qualified as HTTP_TLS
++import Network.TLS qualified as TLS
++import System.X509 (getSystemCertificateStore)
+ 
+ type Fetcher t m = App m => Query t -> m (EVM t ())
+@@ -546,7 +565,7 @@ saveCache dir n cache = do
+ 
+ mkSession :: App m => Maybe FilePath -> Maybe W256 -> m Session
+ mkSession cacheDir mblock = do
+-  sess <- liftIO NetSession.newAPISession
++  sess <- liftIO newRpcSession
+   initialCache <- case (cacheDir, mblock) of
+       (Just dir, Just block) -> liftIO $ loadCache dir block
+       _ -> pure emptyCache
+@@ -559,6 +578,27 @@ mkSession cacheDir mblock = do
+ 
+ mkSessionWithoutCache :: App m => m Session
+ mkSessionWithoutCache = mkSession Nothing Nothing
++
++newRpcSession :: IO NetSession.Session
++newRpcSession = do
++  caStore <- getSystemCertificateStore
++  NetSession.newSessionControl Nothing (rpcManagerSettings caStore)
++
++rpcManagerSettings caStore =
++  HTTP_TLS.mkManagerSettings (Connection.TLSSettings (tls12ClientParams caStore)) Nothing
++
++tls12ClientParams caStore =
++  let params = TLS.defaultParamsClient "" BS.empty
++      shared = (TLS.clientShared params)
++        { TLS.sharedCAStore = caStore
++        }
++      supported = (TLS.clientSupported params)
++        { TLS.supportedVersions = [TLS.TLS12]
++        }
++  in params
++    { TLS.clientSupported = supported
++    , TLS.clientShared = shared
++    }
+ 
+ -- Only used for testing (test.hs, BlockchainTests.hs)
+ zero :: Natural -> Maybe Natural -> Natural -> Fetcher t m

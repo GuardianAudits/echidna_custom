@@ -57,7 +57,11 @@ library:
     - hashable
     - html-conduit
     - html-entities
+    - crypton-connection
+    - crypton-x509-system
     - http-conduit
+    - http-client
+    - http-client-tls
     - http-types
     - ListLike
     - mcp-server
@@ -73,6 +77,7 @@ library:
     - stm
     - strip-ansi-escape
     - time
+    - tls
     - unliftio
     - unliftio-core
     - utf8-string
