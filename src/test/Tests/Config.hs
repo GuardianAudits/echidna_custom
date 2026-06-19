@@ -79,6 +79,36 @@ configTests = testGroup "Configuration tests" $
         Right (c :: EConfigWithUsage) ->
           assertEqual "maxReproducers" 21 c.econfig.mcpConf.maxReproducerArtifacts
         Left e -> assertFailure $ "unexpected decoding error: " <> show e
+  , testCase "parse RPC fallbacks" $ do
+      let yaml = BS8.pack $ unlines
+            [ "rpcUrl: https://primary.example"
+            , "fallbackRpcUrl: https://fallback-one.example"
+            , "fallbackRpcUrls:"
+            , "  - https://fallback-two.example"
+            , "rpcUrls:"
+            , "  - https://fallback-three.example"
+            ]
+      case Y.decodeEither' yaml of
+        Right (c :: EConfigWithUsage) -> do
+          assertEqual "rpcUrl" (Just "https://primary.example") c.econfig.rpcUrl
+          assertEqual "fallbackRpcUrls"
+            [ "https://fallback-three.example"
+            , "https://fallback-one.example"
+            , "https://fallback-two.example"
+            ]
+            c.econfig.fallbackRpcUrls
+        Left e -> assertFailure $ "unexpected decoding error: " <> show e
+  , testCase "parse rpcUrls without rpcUrl" $ do
+      let yaml = BS8.pack $ unlines
+            [ "rpcUrls:"
+            , "  - https://primary.example"
+            , "  - https://fallback.example"
+            ]
+      case Y.decodeEither' yaml of
+        Right (c :: EConfigWithUsage) -> do
+          assertEqual "rpcUrl" (Just "https://primary.example") c.econfig.rpcUrl
+          assertEqual "fallbackRpcUrls" ["https://fallback.example"] c.econfig.fallbackRpcUrls
+        Left e -> assertFailure $ "unexpected decoding error: " <> show e
   , testCase "reject enabled unsupported mcp transports" $ do
       case validateMCPConf defaultMCPConf { enabled = True, transport = MCPUnix } of
         Left _ -> pure ()

@@ -94,6 +94,12 @@ mutConsts: [1, 1, 1, 1]
 maxValue: 100000000000000000000 # 100 eth
 # URL to fetch contracts over RPC
 rpcUrl: null
+# ordered RPC URLs; first entry is primary if rpcUrl is unset
+rpcUrls: []
+# single optional fallback RPC URL
+fallbackRpcUrl: null
+# additional fallback RPC URLs
+fallbackRpcUrls: []
 # block number to use when fetching over RPC
 rpcBlock: null
 # Etherscan API key

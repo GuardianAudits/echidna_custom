@@ -363,6 +363,7 @@ versionOption = infoOption
 overrideConfig :: EConfig -> Options -> IO EConfig
 overrideConfig config Options{..} = do
   envRpcUrl <- Onchain.rpcUrlEnv
+  envRpcFallbackUrls <- Onchain.rpcFallbackUrlsEnv
   envRpcBlock <- Onchain.rpcBlockEnv
   envEtherscanApiKey <- Onchain.etherscanApiKey
   mcpConf <- either die pure . validateMCPConf $ overrideMcpConf config.mcpConf
@@ -372,6 +373,7 @@ overrideConfig config Options{..} = do
            , uiConf = overrideUiConf config.uiConf
            , mcpConf = mcpConf
            , rpcUrl = cliRpcUrl <|> envRpcUrl <|> config.rpcUrl
+           , fallbackRpcUrls = config.fallbackRpcUrls <> envRpcFallbackUrls
            , rpcBlock = cliRpcBlock <|> envRpcBlock <|> config.rpcBlock
            , etherscanApiKey = envEtherscanApiKey <|> config.etherscanApiKey
            , disableOnchainSources = cliDisableOnchainSources || config.disableOnchainSources

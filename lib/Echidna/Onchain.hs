@@ -2,6 +2,7 @@ module Echidna.Onchain
   ( etherscanApiKey
   , fetchChainIdFrom
   , rpcBlockEnv
+  , rpcFallbackUrlsEnv
   , rpcUrlEnv
   , safeFetchContractFrom
   , safeFetchSlotFrom
@@ -58,6 +59,16 @@ rpcUrlEnv = do
   val <- lookupEnv "ECHIDNA_RPC_URL"
   pure (Text.pack <$> val)
 
+rpcFallbackUrlsEnv :: IO [Text]
+rpcFallbackUrlsEnv = do
+  single <- lookupEnv "ECHIDNA_RPC_FALLBACK_URL"
+  many <- lookupEnv "ECHIDNA_RPC_FALLBACK_URLS"
+  pure $ concatMap splitRpcUrls [single, many]
+  where
+    splitRpcUrls Nothing = []
+    splitRpcUrls (Just raw) =
+      filter (not . Text.null) . fmap Text.strip . Text.splitOn "," $ Text.pack raw
+
 rpcBlockEnv :: IO (Maybe Word64)
 rpcBlockEnv = do
   val <- lookupEnv "ECHIDNA_RPC_BLOCK"
@@ -68,23 +79,39 @@ etherscanApiKey = do
   val <- lookupEnv "ETHERSCAN_API_KEY"
   pure (Text.pack <$> val)
 
-safeFetchContractFrom :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> Text -> Addr -> IO (EVM.Fetch.FetchResult Contract)
-safeFetchContractFrom session rpcBlock rpcUrl addr = do
-  catch
-    (do
-      res <- EVM.Fetch.fetchContractWithSession defaultConfig session rpcBlock rpcUrl addr
-      pure $ case res of
-        EVM.Fetch.FetchSuccess c status -> EVM.Fetch.FetchSuccess (EVM.Fetch.makeContractFromRPC c) status
-        EVM.Fetch.FetchFailure status -> EVM.Fetch.FetchFailure status
-        EVM.Fetch.FetchError e -> EVM.Fetch.FetchError e
-    )
-    (\(e :: HttpException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
+safeFetchContractFrom :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> [Text] -> Addr -> IO (EVM.Fetch.FetchResult Contract)
+safeFetchContractFrom session rpcBlock rpcUrls addr =
+  fetchWithFallbacks rpcUrls $ \rpcUrl -> do
+    res <- EVM.Fetch.fetchContractWithSession defaultConfig session rpcBlock rpcUrl addr
+    pure $ case res of
+      EVM.Fetch.FetchSuccess c status -> EVM.Fetch.FetchSuccess (EVM.Fetch.makeContractFromRPC c) status
+      EVM.Fetch.FetchFailure status -> EVM.Fetch.FetchFailure status
+      EVM.Fetch.FetchError e -> EVM.Fetch.FetchError e
 
-safeFetchSlotFrom :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> Text -> Addr -> W256 -> IO (EVM.Fetch.FetchResult W256)
-safeFetchSlotFrom session rpcBlock rpcUrl addr slot =
-  catch
-    (EVM.Fetch.fetchSlotWithCache defaultConfig session rpcBlock rpcUrl addr slot)
-    (\(e :: HttpException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
+safeFetchSlotFrom :: EVM.Fetch.Session -> EVM.Fetch.BlockNumber -> [Text] -> Addr -> W256 -> IO (EVM.Fetch.FetchResult W256)
+safeFetchSlotFrom session rpcBlock rpcUrls addr slot =
+  fetchWithFallbacks rpcUrls $ \rpcUrl ->
+    EVM.Fetch.fetchSlotWithCache defaultConfig session rpcBlock rpcUrl addr slot
+
+fetchWithFallbacks :: [Text] -> (Text -> IO (EVM.Fetch.FetchResult a)) -> IO (EVM.Fetch.FetchResult a)
+fetchWithFallbacks [] _ = pure $ EVM.Fetch.FetchError "No RPC URL configured"
+fetchWithFallbacks urls action = go urls []
+  where
+    go [] errors = pure $ EVM.Fetch.FetchError (Text.intercalate "; " (reverse errors))
+    go (rpcUrl:rest) errors = do
+      result <- catch
+        (action rpcUrl)
+        (\(e :: HttpException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
+      case result of
+        EVM.Fetch.FetchError e ->
+          go rest (("RPC fetch failed via " <> redactRpcUrl rpcUrl <> ": " <> e) : errors)
+        _ -> pure result
+
+redactRpcUrl :: Text -> Text
+redactRpcUrl rpcUrl =
+  case Text.breakOn "/v2/" rpcUrl of
+    (_, suffix) | not (Text.null suffix) -> Text.replace suffix "/v2/<redacted>" rpcUrl
+    _ -> rpcUrl
 
 -- | "Reverse engineer" the SolcContract and SourceCache structures for the
 -- code fetched from the outside
@@ -199,12 +226,12 @@ saveCoverageReport env runId = do
                           [solcContract]
           Nothing -> pure ()
 
-fetchChainIdFrom :: Maybe Text -> IO (Maybe W256)
-fetchChainIdFrom (Just url) = do
+fetchChainIdFrom :: [Text] -> IO (Maybe W256)
+fetchChainIdFrom [] = pure Nothing
+fetchChainIdFrom (url:rest) = do
   sess <- Session.newAPISession
   res <- EVM.Fetch.fetchQuery
     EVM.Fetch.Latest -- this shouldn't matter
     (EVM.Fetch.fetchWithSession url sess)
     EVM.Fetch.QueryChainId
-  pure $ either (const Nothing) Just res
-fetchChainIdFrom Nothing = pure Nothing
+  either (const $ fetchChainIdFrom rest) (pure . Just) res

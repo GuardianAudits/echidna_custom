@@ -105,6 +105,7 @@ data EConfig = EConfig
 
   , allEvents :: Bool
   , rpcUrl :: Maybe Text
+  , fallbackRpcUrls :: [Text]
   , rpcBlock :: Maybe Word64
   , etherscanApiKey :: Maybe Text
   , projectName :: Maybe Text

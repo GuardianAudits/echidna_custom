@@ -117,10 +117,15 @@ execTxWith executeTx tx = do
       -- A previously unknown contract is required
       Just q@(PleaseFetchContract addr _ continuation) -> do
         --logMsg $ "INFO: Performing RPC: " <> show q
-        case config.rpcUrl of
-          Just rpcUrl -> do
+        case rpcUrls config of
+          [] -> do
+            --logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
+            -- TODO: How should we fail here? RPC is not configured but VM
+            -- wants to fetch
+            fromEVM (continuation emptyAccount)
+          urls -> do
             session <- asks (.fetchSession)
-            ret <- liftIO $ safeFetchContractFrom session rpcBlock rpcUrl addr
+            ret <- liftIO $ safeFetchContractFrom session rpcBlock urls addr
             case ret of
               EVM.Fetch.FetchSuccess contract _ -> do
                 fromEVM (continuation contract)
@@ -128,19 +133,18 @@ execTxWith executeTx tx = do
                 fromEVM (continuation emptyAccount)
               EVM.Fetch.FetchError e -> do
                 error $ "ERROR: Failed to fetch contract: " <> show q <> " " <> T.unpack e
-          Nothing -> do
-            --logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
-            -- TODO: How should we fail here? RPC is not configured but VM
-            -- wants to fetch
-            fromEVM (continuation emptyAccount)
         runFully -- resume execution
 
       -- A previously unknown slot is required
       Just q@(PleaseFetchSlot addr slot continuation) -> do
-        case config.rpcUrl of
-          Just rpcUrl -> do
+        case rpcUrls config of
+          [] -> do
+            --logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
+            -- Use the zero slot
+            fromEVM (continuation 0)
+          urls -> do
             session <- asks (.fetchSession)
-            ret <- liftIO $ safeFetchSlotFrom session rpcBlock rpcUrl addr slot
+            ret <- liftIO $ safeFetchSlotFrom session rpcBlock urls addr slot
             case ret of
               EVM.Fetch.FetchSuccess value status -> do
                 -- Log only in text mode, ignoring quiet flag as this is important info
@@ -150,10 +154,6 @@ execTxWith executeTx tx = do
                 fromEVM (continuation 0)
               EVM.Fetch.FetchError e -> do
                 error $ "ERROR: Failed to fetch slot: " <> show q <> " " <> T.unpack e
-          Nothing -> do
-            --logMsg $ "ERROR: Requested RPC but it is not configured: " <> show q
-            -- Use the zero slot
-            fromEVM (continuation 0)
         runFully -- resume execution
 
       -- Execute a FFI call
@@ -213,6 +213,8 @@ execTxWith executeTx tx = do
       fromEVM $ replaceCodeOfSelf (RuntimeCode (ConcreteRuntimeCode bytecode'))
       modify' $ execState $ loadContract (LitAddr tx.dst)
     _ -> pure ()
+
+  rpcUrls config = maybe [] (: config.fallbackRpcUrls) config.rpcUrl
 
 logMsg :: (MonadIO m, MonadReader Env m) => String -> m ()
 logMsg msg = do

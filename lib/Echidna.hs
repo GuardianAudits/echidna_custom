@@ -123,7 +123,7 @@ instance ReadConfig IO where
 mkEnv :: EConfig -> BuildOutput -> [EchidnaTest] -> World -> Maybe SlitherInfo -> IO Env
 mkEnv cfg buildOutput tests world slitherInfo = do
   codehashMap <- newIORef mempty
-  chainId <- Onchain.fetchChainIdFrom cfg.rpcUrl
+  chainId <- Onchain.fetchChainIdFrom (maybe [] (: cfg.fallbackRpcUrls) cfg.rpcUrl)
   eventQueue <- newBroadcastTChanIO
   bus <- newBroadcastTChanIO
   coverageRefInit <- newIORef mempty

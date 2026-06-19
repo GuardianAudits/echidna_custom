@@ -8,7 +8,7 @@ import Data.Aeson.KeyMap (keys)
 import Data.Bool (bool)
 import Data.ByteString qualified as BS
 import Data.Functor ((<&>))
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Set qualified as Set
 import Data.Text (isPrefixOf)
 import Data.Yaml qualified as Y
@@ -60,7 +60,8 @@ instance FromJSON EConfigWithUsage where
     -- x .!= v (Parser) <==> x ..!= v (StateT)
     -- tl;dr use an extra initial . to lift into the StateT parser
     where
-    parser v =
+    parser v = do
+      (primaryRpcUrl, fallbackRpcUrls) <- rpcEndpointsParser
       EConfig <$> campaignConfParser
               <*> pure names
               <*> solConfParser
@@ -69,7 +70,8 @@ instance FromJSON EConfigWithUsage where
               <*> (UIConf <$> v ..:? "timeout" <*> formatParser)
               <*> mcpConfParser
               <*> v ..:? "allEvents" ..!= False
-              <*> v ..:? "rpcUrl"
+              <*> pure primaryRpcUrl
+              <*> pure fallbackRpcUrls
               <*> v ..:? "rpcBlock"
               <*> v ..:? "etherscanApiKey"
               <*> v ..:? "projectName"
@@ -78,6 +80,16 @@ instance FromJSON EConfigWithUsage where
       useKey k = modify' $ Set.insert k
       x ..:? k = useKey k >> lift (x .:? k)
       x ..!= y = fromMaybe y <$> x
+      rpcEndpointsParser = do
+        rpcUrl <- v ..:? "rpcUrl"
+        rpcUrls <- v ..:? "rpcUrls" ..!= []
+        fallbackRpcUrl <- v ..:? "fallbackRpcUrl"
+        fallbackRpcUrls <- v ..:? "fallbackRpcUrls" ..!= []
+        let primaryRpcUrl = rpcUrl <|> listToMaybe rpcUrls
+            rpcUrlsFallbacks = case rpcUrl of
+              Just _ -> rpcUrls
+              Nothing -> drop 1 rpcUrls
+        pure (primaryRpcUrl, rpcUrlsFallbacks <> maybe [] (:[]) fallbackRpcUrl <> fallbackRpcUrls)
       -- Parse as unbounded Integer and see if it fits into W256
       getWord256 k def = do
         value :: Integer <- fromMaybe (fromIntegral (def :: W256)) <$> v ..:? k
