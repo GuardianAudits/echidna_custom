@@ -272,7 +272,7 @@ setupTx tx@Tx{call} = fromEVM $ do
     subState vm = let
         initialAccessedAddrs = Set.fromList $
             [LitAddr tx.src, LitAddr tx.dst, vm.block.coinbase]
-          ++ fmap LitAddr [1..10] -- precompile addresses
+          ++ fmap LitAddr ([1..10] ++ [0x100]) -- precompile addresses
         touched = if isCreate then [LitAddr tx.src] else [LitAddr tx.src, LitAddr tx.dst]
       in SubState mempty touched initialAccessedAddrs mempty mempty mempty
 

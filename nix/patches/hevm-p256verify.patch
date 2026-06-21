@@ -1,0 +1,143 @@
+diff --git a/src/EVM.hs b/src/EVM.hs
+index e045196d..10aaf0bb 100644
+--- a/src/EVM.hs
++++ b/src/EVM.hs
+@@ -64,9 +64,11 @@ import Data.Word (Word8, Word64)
+ import Text.Read (readMaybe)
+ import Witch (into, tryFrom, unsafeInto, tryInto)
+ 
++import Crypto.Error (CryptoFailable(..))
+ import Crypto.Hash (Digest, SHA256, RIPEMD160)
+ import Crypto.Hash qualified as Crypto
+ import Crypto.Number.ModArithmetic (expFast)
++import Crypto.PubKey.ECC.P256 qualified as P256
+ 
+ defaultVMOpts :: VMOps t => VMOpts t
+ defaultVMOpts = VMOpts
+@@ -1417,6 +1419,21 @@ executePrecompile preCompileAddr gasCap inOffset inSize outOffset outSize xs  =
+               Nothing -> precompileFail
+             _ -> precompileFail
+ 
++      -- P256VERIFY
++      0x100 ->
++        -- TODO: support symbolic variant
++        forceConcreteBuf input "P256VERIFY" $ \input' -> do
++          assign' (#state % #stack) (Lit 1 : xs)
++          if p256VerifyInput input'
++            then do
++              let output = ConcreteBuf (word256Bytes 1)
++              assign (#state % #returndata) output
++              copyBytesToMemory output outSize (Lit 0) outOffset
++              next
++            else do
++              assign (#state % #returndata) mempty
++              next
++
+       _ -> notImplemented
+ 
+ truncpadlit :: Int -> ByteString -> ByteString
+@@ -1424,6 +1441,53 @@ truncpadlit n xs = if m > n then BS.take n xs
+                    else BS.append xs (BS.replicate (n - m) 0)
+   where m = BS.length xs
+ 
++p256VerifyInput :: ByteString -> Bool
++p256VerifyInput input
++  | BS.length input /= 160 = False
++  | otherwise =
++    p256Verify h r s qx qy
++  where
++    h  = readInteger 0
++    r  = readInteger 32
++    s  = readInteger 64
++    qx = readInteger 96
++    qy = readInteger 128
++    readInteger :: W256 -> Integer
++    readInteger offset = asInteger $ lazySlice offset 32 input
++
++p256Verify :: Integer -> Integer -> Integer -> Integer -> Integer -> Bool
++p256Verify h r s qx qy =
++  inRange r && inRange s &&
++    let q = P256.pointFromIntegers (qx, qy)
++    in P256.pointIsValid q &&
++       not (P256.pointIsAtInfinity q) &&
++       case p256Scalar s of
++         Nothing -> False
++         Just sScalar ->
++           let w  = P256.scalarInv sScalar
++               u1 = p256ScalarZeroOk $ (h * P256.scalarToInteger w) `mod` p256Order
++               u2 = p256ScalarZeroOk $ (r * P256.scalarToInteger w) `mod` p256Order
++           in case (u1, u2) of
++                (Just u1Scalar, Just u2Scalar) ->
++                  let p = P256.pointsMulVarTime u1Scalar u2Scalar q
++                      (x, _) = P256.pointToIntegers p
++                  in not (P256.pointIsAtInfinity p) && (x `mod` p256Order) == r
++                _ -> False
++  where
++    inRange x = 0 < x && x < p256Order
++
++p256Scalar :: Integer -> Maybe P256.Scalar
++p256Scalar i = case P256.scalarFromInteger i of
++  CryptoPassed scalar -> Just scalar
++  CryptoFailed _ -> Nothing
++
++p256ScalarZeroOk :: Integer -> Maybe P256.Scalar
++p256ScalarZeroOk 0 = Just P256.scalarZero
++p256ScalarZeroOk i = p256Scalar i
++
++p256Order :: Integer
++p256Order = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551
++
+ lazySlice :: W256 -> W256 -> ByteString -> LS.ByteString
+ lazySlice offset size bs =
+   let bs' = LS.take (unsafeInto size) (LS.drop (unsafeInto offset) (fromStrict bs))
+@@ -3385,6 +3449,8 @@ costOfPrecompile (FeeSchedule {..}) precompileAddr input =
+     0x9 -> case input of
+              ConcreteBuf i -> g_fround * (unsafeInto $ asInteger $ lazySlice 0 4 i)
+              _ -> internalError "Unsupported symbolic blake2 gas calc"
++    -- P256VERIFY
++    0x100 -> g_p256verify
+     _ -> internalError $ "unimplemented precompiled contract " ++ show precompileAddr
+ 
+ -- Gas cost of memory expansion
+diff --git a/src/EVM/FeeSchedule.hs b/src/EVM/FeeSchedule.hs
+index e4708f9e..7e5a1921 100644
+--- a/src/EVM/FeeSchedule.hs
++++ b/src/EVM/FeeSchedule.hs
+@@ -45,6 +45,7 @@ data FeeSchedule n = FeeSchedule
+   , g_pairing_point :: n
+   , g_pairing_base :: n
+   , g_fround :: n
++  , g_p256verify :: n
+   , r_block :: n
+   , g_cold_sload :: n
+   , g_cold_account_access :: n
+@@ -100,6 +101,7 @@ feeSchedule = FeeSchedule
+   , g_pairing_point = 34000
+   , g_pairing_base = 45000
+   , g_fround = 1
++  , g_p256verify = 6900
+   , r_block = 2000000000000000000
+   , g_cold_sload = 2100
+   , g_cold_account_access = 2600
+diff --git a/test/test.hs b/test/test.hs
+index 901663cc..173e7a8d 100644
+--- a/test/test.hs
++++ b/test/test.hs
+@@ -604,6 +604,17 @@ tests = testGroup "hevm"
+                 Nothing
+                 (execute 1 (h <> v <> r <> s) 32)
+           ]
++
++      , testGroup "P256VERIFY"
++          [ test "official valid vector" $ do
++              let input = hex "bb5a52f42f9c9261ed4361f59422a1e30036e7c32b270c8807a419feca6050232ba3a8be6b94d5ec80a6d9d1190a436effe50d85a1eee859b8cc6af9bd5c2e184cd60b855d442f5b3c7b11eb6c4e0ae7525fe710fab9aa7c77a67f79e6fadd762927b10512bae3eddcfe467828128bad2903269919f7086069c8c4df6c732838c7787964eaac00e5921fb1498a60f4606766b3d9685001558d1a974e7341513e"
++              assertBoolM "valid EIP-7951 vector verifies" (p256VerifyInput input)
++          , test "official invalid signature vector" $ do
++              let input = hex "bb5a52f42f9c9261ed4361f59422a1e30036e7c32b270c8807a419feca605023d45c5740946b2a147f59262ee6f5bc90bd01ed280528b62b3aed5fc93f06f739b329f479a2bbd0a5c384ee1493b1f5186a87139cac5df4087c134b49156847db2927b10512bae3eddcfe467828128bad2903269919f7086069c8c4df6c732838c7787964eaac00e5921fb1498a60f4606766b3d9685001558d1a974e7341513e"
++              assertBoolM "invalid EIP-7951 vector is rejected" (not $ p256VerifyInput input)
++          , test "malformed length returns false" $ do
++              assertBoolM "short input is rejected" (not $ p256VerifyInput "short")
++          ]
+       ]
+   , testGroup "Byte/word manipulations"
+     [ testProperty "padLeft length" $ \n (Bytes bs) ->

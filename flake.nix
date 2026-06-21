@@ -73,6 +73,7 @@
               ./nix/patches/hevm-direct-memory-copy-no-pad.patch
               ./nix/patches/hevm-config-gated-traces.patch
               ./nix/patches/hevm-getcode.patch
+              ./nix/patches/hevm-p256verify.patch
               ./nix/patches/hevm-create2-prank-deployer.patch
               ./nix/patches/hevm-rpc-tls12-manager.patch
             ] ++ extraPatches;
