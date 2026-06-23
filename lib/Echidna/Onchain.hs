@@ -114,7 +114,7 @@ fetchWithFallbacks urls action = go 1_000_000
 
     go delay = do
       orderedUrls <- activeRpcUrls urls
-      result <- tryUrls orderedUrls []
+      result <- tryUrls orderedUrls [] 0
       case result of
         Right value -> pure value
         Left errors -> do
@@ -124,17 +124,25 @@ fetchWithFallbacks urls action = go 1_000_000
           threadDelay delay
           go (min maxDelay (delay * 2))
 
-    tryUrls [] errors = pure $ Left errors
-    tryUrls (rpcUrl:rest) errors = do
+    tryUrls [] errors _failedCount = pure $ Left errors
+    tryUrls (rpcUrl:rest) errors failedCount = do
       result <- catch
         (action rpcUrl)
         (\(e :: SomeException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
       case result of
         EVM.Fetch.FetchError e -> do
-          coolRpcUrl rpcUrl e
-          tryUrls rest (("RPC fetch failed via " <> redactRpcUrl rpcUrl <> ": " <> e) : errors)
+          cooldown <- coolRpcUrl rpcUrl e
+          hPutStrLn stderr $
+            "WARNING: RPC fetch failed via " <> Text.unpack (redactRpcUrl rpcUrl) <>
+            "; cooling for " <> show (round cooldown :: Integer) <> "s and trying fallback: " <>
+            Text.unpack e
+          tryUrls rest (("RPC fetch failed via " <> redactRpcUrl rpcUrl <> ": " <> e) : errors) (failedCount + 1)
         _ -> do
           clearRpcCooldown rpcUrl
+          when (failedCount > 0) $
+            hPutStrLn stderr $
+              "WARNING: RPC request succeeded after " <> show failedCount <>
+              " failed upstream(s) via " <> Text.unpack (redactRpcUrl rpcUrl)
           pure $ Right result
 
 activeRpcUrls :: [Text] -> IO [Text]
@@ -146,13 +154,13 @@ activeRpcUrls urls = do
         active = filter isActive urls
     pure (currentCooldowns, if null active then urls else active)
 
-coolRpcUrl :: Text -> Text -> IO ()
+coolRpcUrl :: Text -> Text -> IO NominalDiffTime
 coolRpcUrl rpcUrl reason = do
   now <- getCurrentTime
   let cooldown = rpcFailureCooldown reason
       untilTime = addUTCTime cooldown now
   modifyMVar rpcFailureCooldowns $ \cooldowns ->
-    pure (Map.insert rpcUrl untilTime cooldowns, ())
+    pure (Map.insert rpcUrl untilTime cooldowns, cooldown)
 
 clearRpcCooldown :: Text -> IO ()
 clearRpcCooldown rpcUrl =
