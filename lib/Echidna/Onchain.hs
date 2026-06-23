@@ -16,8 +16,11 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
 import Control.Exception (catch, SomeException)
 import Control.Monad (when, forM_)
+import Data.Bits (xor)
 import Data.ByteString qualified as BS
 import Data.ByteString.UTF8 qualified as UTF8
+import Data.Char (ord)
+import Data.List (elemIndex)
 import Data.Map qualified as Map
 import Data.Maybe (isJust, fromJust, fromMaybe)
 import Data.Sequence (Seq)
@@ -25,12 +28,13 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Vector qualified as Vector
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
 import Network.Connection qualified as Connection
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS qualified as HTTP_TLS
 import Network.TLS qualified as TLS
 import Network.Wreq.Session qualified as Session
+import Numeric (showHex)
 import Optics (view)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
@@ -133,16 +137,16 @@ fetchWithFallbacks urls action = go 1_000_000
         EVM.Fetch.FetchError e -> do
           cooldown <- coolRpcUrl rpcUrl e
           hPutStrLn stderr $
-            "WARNING: RPC fetch failed via " <> Text.unpack (redactRpcUrl rpcUrl) <>
+            "WARNING: RPC fetch failed via " <> Text.unpack (rpcEndpointLabel urls rpcUrl) <>
             "; cooling for " <> show (round cooldown :: Integer) <> "s and trying fallback: " <>
             Text.unpack e
-          tryUrls rest (("RPC fetch failed via " <> redactRpcUrl rpcUrl <> ": " <> e) : errors) (failedCount + 1)
+          tryUrls rest (("RPC fetch failed via " <> rpcEndpointLabel urls rpcUrl <> ": " <> e) : errors) (failedCount + 1)
         _ -> do
           clearRpcCooldown rpcUrl
           when (failedCount > 0) $
             hPutStrLn stderr $
               "WARNING: RPC request succeeded after " <> show failedCount <>
-              " failed upstream(s) via " <> Text.unpack (redactRpcUrl rpcUrl)
+              " failed upstream(s) via " <> Text.unpack (rpcEndpointLabel urls rpcUrl)
           pure $ Right result
 
 activeRpcUrls :: [Text] -> IO [Text]
@@ -183,6 +187,23 @@ redactRpcUrl rpcUrl =
       let afterScheme = Text.drop 3 rest
           (host, path') = Text.breakOn "/" afterScheme
        in scheme <> "://" <> host <> if Text.null path' then "" else "/<redacted>"
+
+rpcEndpointLabel :: [Text] -> Text -> Text
+rpcEndpointLabel urls rpcUrl =
+  "upstream #" <> indexLabel <> " id=rpc-" <> shortRpcId rpcUrl <> " " <> redactRpcUrl rpcUrl
+  where
+    indexLabel = maybe "?" (Text.pack . show . (+ 1)) (elemIndex rpcUrl urls)
+
+shortRpcId :: Text -> Text
+shortRpcId rpcUrl =
+  Text.pack . leftPad 8 '0' $ showHex (fnv1a32 rpcUrl) ""
+  where
+    leftPad n c s = replicate (max 0 (n - length s)) c <> s
+
+fnv1a32 :: Text -> Word32
+fnv1a32 = Text.foldl' step 2166136261
+  where
+    step hashValue char = (hashValue `xor` fromIntegral (ord char)) * 16777619
 
 -- | "Reverse engineer" the SolcContract and SourceCache structures for the
 -- code fetched from the outside
