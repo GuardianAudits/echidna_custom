@@ -1,6 +1,7 @@
 module Echidna.Onchain
   ( etherscanApiKey
   , fetchChainIdFrom
+  , fetchWithFallbacks
   , rpcBlockEnv
   , rpcFallbackUrlsEnv
   , rpcUrlEnv
@@ -11,7 +12,8 @@ module Echidna.Onchain
   )
 where
 
-import Control.Concurrent.MVar (readMVar)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
 import Control.Exception (catch, SomeException)
 import Control.Monad (when, forM_)
 import Data.ByteString qualified as BS
@@ -21,17 +23,19 @@ import Data.Maybe (isJust, fromJust, fromMaybe)
 import Data.Sequence (Seq)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Vector qualified as Vector
 import Data.Word (Word64)
 import Network.Connection qualified as Connection
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS qualified as HTTP_TLS
-import Network.HTTP.Simple (HttpException)
 import Network.TLS qualified as TLS
 import Network.Wreq.Session qualified as Session
 import Optics (view)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import System.IO (hPutStrLn, stderr)
+import System.IO.Unsafe (unsafePerformIO)
 import System.X509 (getSystemCertificateStore)
 import Text.Read (readMaybe)
 
@@ -98,25 +102,79 @@ safeFetchSlotFrom session rpcBlock rpcUrls addr slot =
   fetchWithFallbacks rpcUrls $ \rpcUrl ->
     EVM.Fetch.fetchSlotWithCache defaultConfig session rpcBlock rpcUrl addr slot
 
+rpcFailureCooldowns :: MVar (Map.Map Text UTCTime)
+rpcFailureCooldowns = unsafePerformIO (newMVar Map.empty)
+{-# NOINLINE rpcFailureCooldowns #-}
+
 fetchWithFallbacks :: [Text] -> (Text -> IO (EVM.Fetch.FetchResult a)) -> IO (EVM.Fetch.FetchResult a)
 fetchWithFallbacks [] _ = pure $ EVM.Fetch.FetchError "No RPC URL configured"
-fetchWithFallbacks urls action = go urls []
+fetchWithFallbacks urls action = go 1_000_000
   where
-    go [] errors = pure $ EVM.Fetch.FetchError (Text.intercalate "; " (reverse errors))
-    go (rpcUrl:rest) errors = do
+    maxDelay = 30_000_000
+
+    go delay = do
+      orderedUrls <- activeRpcUrls urls
+      result <- tryUrls orderedUrls []
+      case result of
+        Right value -> pure value
+        Left errors -> do
+          hPutStrLn stderr $
+            "WARNING: all RPC URLs failed; retrying in " <> show (delay `div` 1_000_000) <>
+            "s: " <> Text.unpack (Text.intercalate "; " (reverse errors))
+          threadDelay delay
+          go (min maxDelay (delay * 2))
+
+    tryUrls [] errors = pure $ Left errors
+    tryUrls (rpcUrl:rest) errors = do
       result <- catch
         (action rpcUrl)
-        (\(e :: HttpException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
+        (\(e :: SomeException) -> pure $ EVM.Fetch.FetchError (Text.pack $ show e))
       case result of
-        EVM.Fetch.FetchError e ->
-          go rest (("RPC fetch failed via " <> redactRpcUrl rpcUrl <> ": " <> e) : errors)
-        _ -> pure result
+        EVM.Fetch.FetchError e -> do
+          coolRpcUrl rpcUrl e
+          tryUrls rest (("RPC fetch failed via " <> redactRpcUrl rpcUrl <> ": " <> e) : errors)
+        _ -> do
+          clearRpcCooldown rpcUrl
+          pure $ Right result
+
+activeRpcUrls :: [Text] -> IO [Text]
+activeRpcUrls urls = do
+  now <- getCurrentTime
+  modifyMVar rpcFailureCooldowns $ \cooldowns -> do
+    let currentCooldowns = Map.filter (> now) cooldowns
+        isActive url = not (Map.member url currentCooldowns)
+        active = filter isActive urls
+    pure (currentCooldowns, if null active then urls else active)
+
+coolRpcUrl :: Text -> Text -> IO ()
+coolRpcUrl rpcUrl reason = do
+  now <- getCurrentTime
+  let cooldown = rpcFailureCooldown reason
+      untilTime = addUTCTime cooldown now
+  modifyMVar rpcFailureCooldowns $ \cooldowns ->
+    pure (Map.insert rpcUrl untilTime cooldowns, ())
+
+clearRpcCooldown :: Text -> IO ()
+clearRpcCooldown rpcUrl =
+  modifyMVar rpcFailureCooldowns $ \cooldowns ->
+    pure (Map.delete rpcUrl cooldowns, ())
+
+rpcFailureCooldown :: Text -> NominalDiffTime
+rpcFailureCooldown reason
+  | any (`Text.isInfixOf` lower) ["monthly capacity", "capacity limit", "billing", "quota"] = 86_400
+  | any (`Text.isInfixOf` lower) ["429", "rate limit", "ratelimit", "too many", "limit exceeded"] = 600
+  | otherwise = 30
+  where
+    lower = Text.toLower reason
 
 redactRpcUrl :: Text -> Text
 redactRpcUrl rpcUrl =
-  case Text.breakOn "/v2/" rpcUrl of
-    (_, suffix) | not (Text.null suffix) -> Text.replace suffix "/v2/<redacted>" rpcUrl
-    _ -> rpcUrl
+  case Text.breakOn "://" rpcUrl of
+    (_, "") -> rpcUrl
+    (scheme, rest) ->
+      let afterScheme = Text.drop 3 rest
+          (host, path') = Text.breakOn "/" afterScheme
+       in scheme <> "://" <> host <> if Text.null path' then "" else "/<redacted>"
 
 -- | "Reverse engineer" the SolcContract and SourceCache structures for the
 -- code fetched from the outside
@@ -233,13 +291,17 @@ saveCoverageReport env runId = do
 
 fetchChainIdFrom :: [Text] -> IO (Maybe W256)
 fetchChainIdFrom [] = pure Nothing
-fetchChainIdFrom (url:rest) = do
+fetchChainIdFrom urls = do
   sess <- newRpcSession
-  res <- EVM.Fetch.fetchQuery
-    EVM.Fetch.Latest -- this shouldn't matter
-    (EVM.Fetch.fetchWithSession url sess)
-    EVM.Fetch.QueryChainId
-  either (const $ fetchChainIdFrom rest) (pure . Just) res
+  res <- fetchWithFallbacks urls $ \url -> do
+    chainId <- EVM.Fetch.fetchQuery
+      EVM.Fetch.Latest -- this shouldn't matter
+      (EVM.Fetch.fetchWithSession url sess)
+      EVM.Fetch.QueryChainId
+    pure $ either (EVM.Fetch.FetchError . Text.pack . show) (`EVM.Fetch.FetchSuccess` EVM.Fetch.Fresh) chainId
+  pure $ case res of
+    EVM.Fetch.FetchSuccess chainId _ -> Just chainId
+    _ -> Nothing
 
 newRpcSession :: IO Session.Session
 newRpcSession = do
