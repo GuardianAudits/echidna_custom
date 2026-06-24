@@ -28,7 +28,4 @@ cheatTests =
     , testContract' "cheat/getCode.sol" (Just "TestGetCodeNoFFI") (Just (> solcV (0,5,0))) (Just "cheat/getCode_noffi.yaml") False FuzzWorker
         [ ("echidna_getCode_reverts_without_allowffi failed", passed "echidna_getCode_reverts_without_allowffi")
         ]
-    , testContract' "cheat/invalidUtf8String.sol" (Just "TestInvalidUtf8String") (Just (>= solcV (0,8,0))) (Just "cheat/invalidUtf8String.yaml") False FuzzWorker
-        [ ("echidna_invalid_utf8_env_key_is_escaped failed", passed "echidna_invalid_utf8_env_key_is_escaped")
-        ]
     ]

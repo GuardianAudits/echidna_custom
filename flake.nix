@@ -76,7 +76,6 @@
               ./nix/patches/hevm-p256verify.patch
               ./nix/patches/hevm-create2-prank-deployer.patch
               ./nix/patches/hevm-rpc-tls12-manager.patch
-              ./nix/patches/hevm-escape-invalid-utf8.patch
             ] ++ extraPatches;
           }) { secp256k1 = pkgs.secp256k1; })
           ([
