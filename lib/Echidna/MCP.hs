@@ -25,7 +25,6 @@ import qualified Data.Set as Set
 import qualified Data.Vector as Vector
 import Data.Text (Text, pack, unpack)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8)
 import Data.Time (LocalTime, UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
 import Text.Printf (printf)
 import Data.Map (Map)
@@ -42,6 +41,7 @@ import EVM.Dapp (DappInfo(..))
 import EVM.Solidity (SolcContract(..), Method(..))
 import EVM.Types (Addr, VM, VMType(Concrete), W256)
 import EVM.ABI (AbiValue(..), AbiType(..), abiValueType)
+import Echidna.Encoding (jsonValueText)
 import Echidna.Exec (execTx)
 import Echidna.Test (checkETest, getResultFromVM)
 import Echidna.Types.Test (EchidnaTest(..), TestState(..), TestType(..), TestValue(..), didFail, isOptimizationTest)
@@ -889,7 +889,7 @@ streamableToolContent value = object
   [ "content" .=
       [ object
           [ "type" .= ("text" :: Text)
-          , "text" .= decodeUtf8 (BL8.toStrict $ encode value)
+          , "text" .= jsonValueText value
           ]
       ]
   ]
@@ -918,7 +918,7 @@ streamableResourcesRead rid env workerRefs st params =
               let content = object
                     [ "uri" .= uri
                     , "mimeType" .= ("application/json" :: Text)
-                    , "text" .= decodeUtf8 (BL8.toStrict $ encode value)
+                    , "text" .= jsonValueText value
                     ]
               in streamableMcpResult rid $ object ["contents" .= [content]]
         _ -> pure $ streamableMcpError rid (-32602) "Missing uri"

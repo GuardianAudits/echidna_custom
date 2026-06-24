@@ -15,7 +15,6 @@ import Data.Sequence qualified as Seq
 import Data.Set qualified as S
 import Data.Text (Text, pack)
 import Data.Text qualified as T
-import Data.Text.Encoding (decodeUtf8)
 import Data.Text.IO (writeFile)
 import Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
 import Data.Vector qualified as V
@@ -34,6 +33,7 @@ import Text.Printf (printf)
 import EVM.Dapp (srcMapCodePos, DappInfo(..))
 import EVM.Solidity (SourceCache(..), SrcMap, SolcContract(..))
 
+import Echidna.Encoding (decodeUtf8OrEscaped)
 import Echidna.SourceAnalysis.Slither (AssertLocation(..), assertLocationList, SlitherInfo(..))
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config (Env(..), EConfig(..))
@@ -137,7 +137,7 @@ ppCoveredCode fileType sc cs s projectName timestamp excludePatterns
     -- List of covered lines during the fuzzing campaign
     covLines = srcMapCov sc s cs
     -- Collect all the possible lines from all the files
-    allFiles = (\(path, src) -> (path, V.fromList (decodeUtf8 <$> BS.split 0xa src))) <$> Map.elems sc.files
+    allFiles = decodedSourceFiles sc
     -- Find common path prefix for filtering
     commonPrefix = findCommonPathPrefix (map fst allFiles)
     -- Filter out excluded files using relative paths
@@ -226,7 +226,7 @@ coverageLineHits
 coverageLineHits sc covMap contracts excludePatterns =
   let
     covLines = srcMapCov sc covMap contracts
-    allFiles = (\(path, src) -> (path, V.fromList (decodeUtf8 <$> BS.split 0xa src))) <$> Map.elems sc.files
+    allFiles = decodedSourceFiles sc
     commonPrefix = findCommonPathPrefix (map fst allFiles)
     filteredFiles = filterExcludedFiles excludePatterns commonPrefix allFiles
     runtimeLinesMap = buildRuntimeLinesMap sc contracts
@@ -239,6 +239,10 @@ coverageLineHits sc covMap contracts excludePatterns =
             ]
       in (makeRelativePath commonPrefix srcPath, lineHits)
   in Map.fromList (map (fileLineHits . fst) filteredFiles)
+
+decodedSourceFiles :: SourceCache -> [(FilePath, V.Vector Text)]
+decodedSourceFiles sc =
+  (\(path, src) -> (path, V.fromList (decodeUtf8OrEscaped <$> BS.split 0xa src))) <$> Map.elems sc.files
 
 -- | Given a contract, and tuple as coverage, return the corresponding mapped line (if any)
 srcMapForOpLocation :: SolcContract -> OpIx -> Maybe SrcMap

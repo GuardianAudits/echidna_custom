@@ -1,0 +1,137 @@
+diff --git a/src/EVM.hs b/src/EVM.hs
+--- a/src/EVM.hs
++++ b/src/EVM.hs
+@@ -52,7 +52,6 @@ import Data.Set (insert, member, fromList)
+ import Data.Sequence (Seq)
+ import Data.Sequence qualified as Seq
+ import Data.Text (unpack, pack)
+-import Data.Text.Encoding (decodeUtf8)
+ import Data.Tree
+ import Data.Tree.Zipper qualified as Zipper
+ import Data.Typeable
+@@ -2163,7 +2162,7 @@ callCheat pc = do
+       \sig input -> case decodeBuf [AbiAddressType, AbiStringType] input of
+         (CAbi valsArr,"") -> case valsArr of
+           [AbiAddress addr, AbiString label] -> do
+-            #labels %= Map.insert addr (decodeUtf8 label)
++            #labels %= Map.insert addr (pack (toString label))
+             doStop
+           _ -> vmError (BadCheatCode "label(address,string) address decoding failed" sig)
+         _ -> vmError (BadCheatCode "label(address,string) parameter decoding failed" sig)
+@@ -2509,7 +2508,12 @@ callCheat pc = do
+     continueOnce cont = do
+       assign #result Nothing
+       cont
+     doStop = finishFrame (FrameReturned mempty)
+-    toString = unpack . decodeUtf8
++    toString = stripQuotes . formatString
++    stripQuotes ('"':rest) =
++      case reverse rest of
++        '"':body -> reverse body
++        _ -> '"' : rest
++    stripQuotes s = s
+     strip0x s = if "0x" `isPrefixOf` s then drop 2 s else s
+     stringToBool :: String -> Either ByteString Bool
+     stringToBool s = case s of
+diff --git a/src/EVM/ConsoleLog.hs b/src/EVM/ConsoleLog.hs
+--- a/src/EVM/ConsoleLog.hs
++++ b/src/EVM/ConsoleLog.hs
+@@ -13,4 +12,4 @@ import Data.Text qualified as T
+ import Data.Text.Encoding qualified as T
+ 
+-import EVM.ABI (AbiType(..), AbiValue(..), decodeBuf, AbiVals(..))
++import EVM.ABI (AbiType(..), AbiValue(..), decodeBuf, AbiVals(..), formatString)
+ import EVM.Types (Expr(..), EType(..), FunctionSelector(..), abiKeccak, word32)
+@@ -35,10 +34,10 @@ formatConsoleLogBS bs =
+         Nothing -> "console::log(" <> hexBS bs <> ")"
+   where
+-    hexBS b = "0x" <> T.decodeUtf8 (toStrict (toLazyByteString (byteStringHex b)))
++    hexBS b = "0x" <> T.decodeLatin1 (toStrict (toLazyByteString (byteStringHex b)))
+ 
+ -- | Format an ABI value for console output
+ showAbiVal :: AbiValue -> Text
+-showAbiVal (AbiString s) = T.pack (show (Char8.unpack s))
++showAbiVal (AbiString s) = T.pack (formatString s)
+ showAbiVal (AbiAddress addr) = pack (show addr)
+ showAbiVal (AbiBool b) = if b then "true" else "false"
+ showAbiVal v = pack (show v)
+diff --git a/src/EVM/Format.hs b/src/EVM/Format.hs
+--- a/src/EVM/Format.hs
++++ b/src/EVM/Format.hs
+@@ -182,7 +182,7 @@ formatBString b = mconcat [ "«",  T.dropAround (=='"') (pack $ formatString b),
+ 
+ formatBinary :: ByteString -> Text
+ formatBinary =
+-  (<>) "0x" . T.decodeUtf8 . toStrict . toLazyByteString . byteStringHex
++  (<>) "0x" . T.decodeLatin1 . toStrict . toLazyByteString . byteStringHex
+ 
+ formatSBinary :: Expr Buf -> Text
+ formatSBinary e = format $ Expr.concKeccakSimpExpr e
+diff --git a/src/EVM/Solidity.hs b/src/EVM/Solidity.hs
+--- a/src/EVM/Solidity.hs
++++ b/src/EVM/Solidity.hs
+@@ -53,6 +53,6 @@ import Control.Applicative
+ import Control.Monad
+ import Control.Monad.IO.Unlift
+-import Data.Aeson (encode)
++import Data.Aeson.Text qualified as AesonText
+ import Data.Aeson.Types
+ import Data.Aeson.Optics
+ import Data.Aeson.Key qualified as Key
+@@ -62,7 +62,6 @@ import Data.Scientific
+ import Data.ByteString (ByteString, readFile)
+ import Data.ByteString qualified as BS
+ import Data.ByteString.Base16 qualified as BS16
+-import Data.ByteString.Lazy (toStrict)
+ import Data.Char (isDigit)
+ import Data.Foldable
+ import Data.Map.Strict (Map)
+@@ -76,6 +75,7 @@ import Data.Sequence (Seq)
+ import Data.Text (pack, intercalate)
+ import Data.Text qualified as T
+ import Data.Text.Encoding (encodeUtf8, decodeUtf8)
++import Data.Text.Lazy qualified as TL
+ import Data.Vector (Vector)
+ import Data.Vector qualified as Vector
+ import Data.Word (Word8)
+@@ -763,7 +763,7 @@ instance ToJSON StandardJSON where
+            ]
+ 
+ stdjson :: Language -> Text -> Bool -> Text
+-stdjson lang src viaIR = decodeUtf8 $ toStrict $ encode $ StandardJSON lang src viaIR
++stdjson lang src viaIR = TL.toStrict . AesonText.encodeToLazyText $ StandardJSON lang src viaIR
+ 
+ -- | When doing CREATE and passing constructor arguments, Solidity loads
+ -- the argument data via the creation bytecode, since there is no "calldata"
+diff --git a/src/EVM/Types.hs b/src/EVM/Types.hs
+--- a/src/EVM/Types.hs
++++ b/src/EVM/Types.hs
+@@ -1292,7 +1292,7 @@
+   show (ByteStringS x) = ("0x" ++) . T.unpack . fromBinary $ x
+     where
+       fromBinary =
+-        T.decodeUtf8 . toStrict . toLazyByteString . byteStringHex
++        T.decodeLatin1 . toStrict . toLazyByteString . byteStringHex
+ 
+ instance JSON.FromJSON ByteStringS where
+   parseJSON (JSON.String x) =
+@@ -1636,9 +1636,17 @@ padRight' n xs = xs <> replicate (n - length xs) '0'
+ -- We need this here instead of Format for cyclic import reasons...
+ formatString :: ByteString -> String
+ formatString bs =
+-  case T.decodeUtf8' (fst (BS.spanEnd (== 0) bs)) of
++  let stripped = fst (BS.spanEnd (== 0) bs)
++  in case T.decodeUtf8' stripped of
+     Right s -> "\"" <> T.unpack s <> "\""
+-    Left _ -> "❮utf8 decode failed❯: " <> (show $ ByteStringS bs)
++    Left _ -> "\"" <> concatMap escapeByte (BS.unpack stripped) <> "\""
++
++escapeByte :: Word8 -> String
++escapeByte w
++  | w == 0x22 = "\\\""
++  | w == 0x5c = "\\\\"
++  | w >= 0x20 && w <= 0x7e = [chr (fromIntegral w)]
++  | otherwise = "\\x" <> paddedShowHex 2 w
+ 
+ -- |'paddedShowHex' displays a number in hexadecimal and pads the number
+ -- with 0 so that it has a minimum length of @w@.

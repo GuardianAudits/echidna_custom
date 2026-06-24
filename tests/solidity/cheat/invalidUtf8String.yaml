@@ -1,0 +1,5 @@
+testMode: property
+testLimit: 1
+seqLen: 1
+shrinkLimit: 0
+coverage: false

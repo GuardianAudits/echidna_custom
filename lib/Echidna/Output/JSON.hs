@@ -3,19 +3,18 @@
 module Echidna.Output.JSON where
 
 import Data.Aeson hiding (Error)
-import Data.ByteString.Base16 qualified as BS16
 import Data.ByteString.Lazy qualified as L
 import Data.IORef (readIORef)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Text
-import Data.Text.Encoding (decodeUtf8)
 import Data.Vector.Unboxed qualified as VU
 import Numeric (showHex)
 
 import EVM.Dapp (DappInfo)
 
 import Echidna.ABI (ppAbiValue, GenDict(..))
+import Echidna.Encoding (hexText)
 import Echidna.Events (Events, extractEvents)
 import Echidna.Types.Campaign (WorkerState(..))
 import Echidna.Types.Config (Env(..))
@@ -157,4 +156,4 @@ mapTest dappInfo test =
     SolCreate _          -> ("<CREATE>", Nothing)
     SolCall (name, args) -> (name, Just $ ppAbiValue mempty <$> args)
     NoCall               -> ("*wait*", Nothing)
-    SolCalldata x        -> (decodeUtf8 $ "0x" <> BS16.encode x, Nothing)
+    SolCalldata x        -> (hexText x, Nothing)
