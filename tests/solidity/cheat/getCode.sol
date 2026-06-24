@@ -11,6 +11,22 @@ contract TestGetCode {
     return HEVM_ADDRESS.call(abi.encodeWithSignature("getCode(string)", artifactRef));
   }
 
+  function _callGetCodeEither(string memory artifactRefA, string memory artifactRefB) internal returns (bool ok, bytes memory ret) {
+    (ok, ret) = _callGetCode(artifactRefA);
+    if (ok) return (ok, ret);
+    return _callGetCode(artifactRefB);
+  }
+
+  function _rejectsBoth(string memory artifactRefA, string memory artifactRefB) internal returns (bool) {
+    bool ok;
+
+    (ok, ) = _callGetCode(artifactRefA);
+    if (ok) return false;
+
+    (ok, ) = _callGetCode(artifactRefB);
+    return !ok;
+  }
+
   function _equalsExpected(bytes memory encoded, bytes memory expected) internal pure returns (bool) {
     bytes memory got = abi.decode(encoded, (bytes));
     return keccak256(got) == keccak256(expected);
@@ -20,7 +36,10 @@ contract TestGetCode {
     bool ok;
     bytes memory ret;
 
-    (ok, ret) = _callGetCode("tests/solidity/cheat/getcode_artifacts/GetCodeWidget.0.8.18.json");
+    (ok, ret) = _callGetCodeEither(
+      "tests/solidity/cheat/getcode_artifacts/GetCodeWidget.0.8.18.json",
+      "cheat/getcode_artifacts/GetCodeWidget.0.8.18.json"
+    );
     if (!ok || !_equalsExpected(ret, hex"60016000556002600055")) return false;
 
     (ok, ret) = _callGetCode("GetCodeWidget.sol:GetCodeWidget");
@@ -53,17 +72,25 @@ contract TestGetCode {
     (ok, ) = _callGetCode("bad:selector:shape");
     if (ok) return false;
 
-    (ok, ) = _callGetCode("tests/solidity/cheat/getcode_artifacts/InvalidJson.json");
-    if (ok) return false;
+    if (!_rejectsBoth(
+      "tests/solidity/cheat/getcode_artifacts/InvalidJson.json",
+      "cheat/getcode_artifacts/InvalidJson.json"
+    )) return false;
 
-    (ok, ) = _callGetCode("tests/solidity/cheat/getcode_artifacts/MissingBytecode.json");
-    if (ok) return false;
+    if (!_rejectsBoth(
+      "tests/solidity/cheat/getcode_artifacts/MissingBytecode.json",
+      "cheat/getcode_artifacts/MissingBytecode.json"
+    )) return false;
 
-    (ok, ) = _callGetCode("tests/solidity/cheat/getcode_artifacts/InvalidHex.json");
-    if (ok) return false;
+    if (!_rejectsBoth(
+      "tests/solidity/cheat/getcode_artifacts/InvalidHex.json",
+      "cheat/getcode_artifacts/InvalidHex.json"
+    )) return false;
 
-    (ok, ) = _callGetCode("tests/solidity/cheat/getcode_artifacts/Unlinked.json");
-    if (ok) return false;
+    if (!_rejectsBoth(
+      "tests/solidity/cheat/getcode_artifacts/Unlinked.json",
+      "cheat/getcode_artifacts/Unlinked.json"
+    )) return false;
 
     (ok, ) = _callGetCode("../solidity_project/fixtures/json/sample.json");
     if (ok) return false;
@@ -75,10 +102,12 @@ contract TestGetCode {
 contract TestGetCodeNoFFI {
   address constant HEVM_ADDRESS = 0x7109709ECfa91a80626fF3989D68f67F5b1DD12D;
 
+  function _callGetCode(string memory artifactRef) internal returns (bool ok) {
+    (ok, ) = HEVM_ADDRESS.call(abi.encodeWithSignature("getCode(string)", artifactRef));
+  }
+
   function echidna_getCode_reverts_without_allowffi() public returns (bool) {
-    (bool ok, ) = HEVM_ADDRESS.call(
-      abi.encodeWithSignature("getCode(string)", "tests/solidity/cheat/getcode_artifacts/GetCodeWidget.0.8.18.json")
-    );
-    return ok == false;
+    return !_callGetCode("tests/solidity/cheat/getcode_artifacts/GetCodeWidget.0.8.18.json")
+      && !_callGetCode("cheat/getcode_artifacts/GetCodeWidget.0.8.18.json");
   }
 }
