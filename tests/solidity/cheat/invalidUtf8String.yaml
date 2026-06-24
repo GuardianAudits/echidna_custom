@@ -1,0 +1,4 @@
+testLimit: 1
+seqLen: 1
+workers: 1
+coverage: false

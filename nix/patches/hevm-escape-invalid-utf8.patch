@@ -1,0 +1,64 @@
+diff --git a/src/EVM.hs b/src/EVM.hs
+--- a/src/EVM.hs
++++ b/src/EVM.hs
+@@ -54,8 +54,7 @@ import Data.Set (insert, member, fromList)
+ import Data.Set qualified as Set
+ import Data.Sequence (Seq)
+ import Data.Sequence qualified as Seq
+ import Data.Text (unpack, pack)
+-import Data.Text.Encoding (decodeUtf8)
+ import Data.Tree
+ import Data.Tree.Zipper qualified as Zipper
+ import Data.Typeable
+@@ -2163,7 +2162,7 @@ callCheat pc = do
+       \sig input -> case decodeBuf [AbiAddressType, AbiStringType] input of
+         (CAbi valsArr,"") -> case valsArr of
+           [AbiAddress addr, AbiString label] -> do
+-            #labels %= Map.insert addr (decodeUtf8 label)
++            #labels %= Map.insert addr (pack (toString label))
+             doStop
+           _ -> vmError (BadCheatCode "label(address,string) address decoding failed" sig)
+         _ -> vmError (BadCheatCode "label(address,string) parameter decoding failed" sig)
+@@ -2509,9 +2508,14 @@ callCheat pc = do
+     frameRevert err = finishFrame (FrameReverted $ errorMsg err)
+     continueOnce cont = do
+       assign #result Nothing
+       cont
+     doStop = finishFrame (FrameReturned mempty)
+-    toString = unpack . decodeUtf8
++    toString = stripQuotes . formatString
++    stripQuotes ('"':rest) =
++      case reverse rest of
++        '"':body -> reverse body
++        _ -> '"' : rest
++    stripQuotes s = s
+     strip0x s = if "0x" `isPrefixOf` s then drop 2 s else s
+     stringToBool :: String -> Either ByteString Bool
+     stringToBool s = case s of
+diff --git a/src/EVM/Types.hs b/src/EVM/Types.hs
+--- a/src/EVM/Types.hs
++++ b/src/EVM/Types.hs
+@@ -1631,12 +1631,20 @@ padRight' n xs = xs <> replicate (n - length xs) '0'
+-
++
+ -- We need this here instead of Format for cyclic import reasons...
+ formatString :: ByteString -> String
+ formatString bs =
+-  case T.decodeUtf8' (fst (BS.spanEnd (== 0) bs)) of
++  let stripped = fst (BS.spanEnd (== 0) bs)
++  in case T.decodeUtf8' stripped of
+     Right s -> "\"" <> T.unpack s <> "\""
+-    Left _ -> "❮utf8 decode failed❯: " <> (show $ ByteStringS bs)
++    Left _ -> "\"" <> concatMap escapeByte (BS.unpack stripped) <> "\""
++
++escapeByte :: Word8 -> String
++escapeByte w
++  | w == 0x22 = "\\\""
++  | w == 0x5c = "\\\\"
++  | w >= 0x20 && w <= 0x7e = [chr (fromIntegral w)]
++  | otherwise = "\\x" <> paddedShowHex 2 w
+-
++
+ -- |'paddedShowHex' displays a number in hexadecimal and pads the number
+ -- with 0 so that it has a minimum length of @w@.
+ paddedShowHex :: (Show a, Integral a) => Int -> a -> String
