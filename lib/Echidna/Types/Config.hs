@@ -3,7 +3,7 @@ module Echidna.Types.Config where
 import Control.Concurrent.STM (TChan)
 import Data.Aeson (FromJSON(..), withText)
 import Data.Aeson.Key (Key)
-import Data.IORef (IORef)
+import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
 import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -126,6 +126,33 @@ data EConfigWithUsage = EConfigWithUsage
   , unsetkeys :: Set Key
   }
 
+data InitialCorpusReplayState
+  = InitialCorpusReplayComplete
+  | InitialCorpusReplayIncomplete !Int
+  deriving (Eq, Show)
+
+resetInitialCorpusReplayState :: IORef InitialCorpusReplayState -> Int -> IO ()
+resetInitialCorpusReplayState ref pendingWorkers =
+  writeIORef ref $
+    if pendingWorkers <= 0
+      then InitialCorpusReplayComplete
+      else InitialCorpusReplayIncomplete pendingWorkers
+
+markInitialCorpusReplayWorkerComplete :: IORef InitialCorpusReplayState -> IO ()
+markInitialCorpusReplayWorkerComplete ref =
+  atomicModifyIORef' ref $ \case
+    InitialCorpusReplayComplete -> (InitialCorpusReplayComplete, ())
+    InitialCorpusReplayIncomplete pending
+      | pending <= 1 -> (InitialCorpusReplayComplete, ())
+      | otherwise -> (InitialCorpusReplayIncomplete (pending - 1), ())
+
+initialCorpusReplayComplete :: IORef InitialCorpusReplayState -> IO Bool
+initialCorpusReplayComplete ref = do
+  state <- readIORef ref
+  pure $ case state of
+    InitialCorpusReplayComplete -> True
+    InitialCorpusReplayIncomplete _ -> False
+
 data Env = Env
   { cfg :: EConfig
   , dapp :: DappInfo
@@ -145,6 +172,7 @@ data Env = Env
   , coverageRefInit :: IORef CoverageMap
   , coverageRefRuntime :: IORef CoverageMap
   , corpusRef :: IORef Corpus
+  , initialCorpusReplayRef :: IORef InitialCorpusReplayState
 
   , slitherInfo :: Maybe SlitherInfo
   , codehashMap :: CodehashMap

@@ -36,6 +36,8 @@ import Echidna.MCP
   , streamableToolsCall
   , streamableToolsList
   , streamableResourcesRead
+  , streamableCoverageNotReadyCode
+  , streamableCoverageNotReadyMessage
   , jsonHeaders
   , StreamableEventBuffer(..)
   , StreamableEventsArgs(..)
@@ -50,7 +52,11 @@ import Echidna.MCP
   , streamableRetainedReproducerTxs
   , streamableStrictRequestBodyWithLimit
   )
-import Echidna.Types.Config (MCPConf(..), defaultMCPConf)
+import Echidna.Types.Config
+  ( MCPConf(..), defaultMCPConf, InitialCorpusReplayState(..)
+  , initialCorpusReplayComplete, markInitialCorpusReplayWorkerComplete
+  , resetInitialCorpusReplayState
+  )
 import Echidna.Types.Campaign (initialWorkerState)
 import Echidna.Types.Test (EchidnaTest(..), TestState(..), TestType(..), TestValue(..))
 import Echidna.Types.Tx (Tx(..), TxCall(..), TxResult(..))
@@ -372,6 +378,34 @@ streamableReliabilityTests = testGroup "streamable MCP reliability"
       case cached of
         StreamableCoverageComputed snapshot -> snapshot @?= object []
         _ -> assertFailure "expected computed empty coverage to remain cached"
+  , testCase "coverage requests before corpus replay completes return not ready" $ do
+      st <- mkStreamableState 10
+      resetInitialCorpusReplayState st.streamableInitialCorpusReplayRef 1
+      toolPayload <- streamableToolsCall (String "tool") undefined [] st (Just coverageToolParams)
+      objectInt ["error", "code"] toolPayload @?= Just streamableCoverageNotReadyCode
+      objectText ["error", "message"] toolPayload @?= Just streamableCoverageNotReadyMessage
+      resourcePayload <- streamableResourcesRead (String "resource") undefined [] st (Just coverageResourceParams)
+      objectInt ["error", "code"] resourcePayload @?= Just streamableCoverageNotReadyCode
+      objectText ["error", "message"] resourcePayload @?= Just streamableCoverageNotReadyMessage
+  , testCase "coverage requests after corpus replay completes return cached coverage" $ do
+      st <- mkStreamableState 10
+      writeIORef st.streamableCoverageRef (StreamableCoverageComputed (object ["ready" .= True]))
+      toolPayload <- streamableToolsCall (String "tool") undefined [] st (Just coverageToolParams)
+      objectArrayText ["result", "content"] 0 ["text"] toolPayload @?= Just "{\"ready\":true}"
+      resourcePayload <- streamableResourcesRead (String "resource") undefined [] st (Just coverageResourceParams)
+      objectArrayText ["result", "contents"] 0 ["text"] resourcePayload @?= Just "{\"ready\":true}"
+  , testCase "corpus replay state resets for a new run" $ do
+      replayRef <- newIORef InitialCorpusReplayComplete
+      resetInitialCorpusReplayState replayRef 2
+      initialCorpusReplayComplete replayRef >>= (@?= False)
+      markInitialCorpusReplayWorkerComplete replayRef
+      initialCorpusReplayComplete replayRef >>= (@?= False)
+      markInitialCorpusReplayWorkerComplete replayRef
+      initialCorpusReplayComplete replayRef >>= (@?= True)
+      resetInitialCorpusReplayState replayRef 1
+      initialCorpusReplayComplete replayRef >>= (@?= False)
+      markInitialCorpusReplayWorkerComplete replayRef
+      initialCorpusReplayComplete replayRef >>= (@?= True)
   , testCase "transient reproducer replay results are not cached" $ do
       streamableCacheableReproducerVerification
         (StreamableReproducerVerification False "unverified" "replay-timeout") @?= False
@@ -435,6 +469,14 @@ objectInt (key:keys) (Object o) =
   KM.lookup (K.fromText key) o >>= objectInt keys
 objectInt _ _ = Nothing
 
+objectArrayText :: [T.Text] -> Int -> [T.Text] -> Value -> Maybe T.Text
+objectArrayText [] idx keys (Array xs)
+  | idx < Vector.length xs = objectText keys (xs Vector.! idx)
+  | otherwise = Nothing
+objectArrayText (key:keys) idx textKeys (Object o) =
+  KM.lookup (K.fromText key) o >>= objectArrayText keys idx textKeys
+objectArrayText _ _ _ _ = Nothing
+
 eventIds :: Value -> [Int]
 eventIds (Object o) =
   case KM.lookup (K.fromText $ T.pack "events") o of
@@ -467,13 +509,25 @@ objectText (key:keys) (Object o) =
   KM.lookup (K.fromText key) o >>= objectText keys
 objectText _ _ = Nothing
 
+coverageToolParams :: Value
+coverageToolParams = object
+  [ "name" .= ("get_coverage_hits" :: T.Text)
+  , "arguments" .= object []
+  ]
+
+coverageResourceParams :: Value
+coverageResourceParams = object
+  [ "uri" .= ("echidna://coverage/lines" :: T.Text)
+  ]
+
 mkStreamableState :: Int -> IO StreamableMCPState
 mkStreamableState maxEvents = do
   eventsRef <- newIORef (StreamableEventBuffer 0 [])
   coverageRef <- newIORef StreamableCoverageNotComputed
   reproducerCacheRef <- newIORef Map.empty
+  initialCorpusReplayRef <- newIORef InitialCorpusReplayComplete
   let started = read "2026-06-06 00:00:00 UTC" :: UTCTime
-  pure $ StreamableMCPState eventsRef started maxEvents 65536 coverageRef reproducerCacheRef Nothing
+  pure $ StreamableMCPState eventsRef started maxEvents 65536 coverageRef reproducerCacheRef initialCorpusReplayRef Nothing
 
 nextBodyChunk :: IORef [BS.ByteString] -> IO BS.ByteString
 nextBodyChunk ref =

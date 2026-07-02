@@ -101,7 +101,11 @@ ui vm dict initialCorpus cliSelectedContract = do
       replicate largerCorpusChunks (corpusChunkSize + 1) <>
       replicate (nFuzzWorkers - largerCorpusChunks) corpusChunkSize
     corpusChunks = splitPlaces corpusChunkSizes initialCorpus ++ repeat []
+    initialCorpusReplayWorkers =
+      length $ filter (not . null) (take nFuzzWorkers corpusChunks)
 
+  liftIO $
+    resetInitialCorpusReplayState env.initialCorpusReplayRef initialCorpusReplayWorkers
   corpusSaverStopVar <- spawnListener (saveCorpusEvent env)
 
   let spawnWorkers =

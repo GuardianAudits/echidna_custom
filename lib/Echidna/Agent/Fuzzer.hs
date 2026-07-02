@@ -8,7 +8,7 @@ module Echidna.Agent.Fuzzer where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM (atomically, tryReadTChan, dupTChan, putTMVar)
-import Control.Monad (foldM, replicateM, void, forM_, when)
+import Control.Monad (foldM, replicateM, void, forM_, unless, when)
 import Control.Monad.Reader (runReaderT, liftIO, asks, MonadReader, ask)
 import Control.Monad.State.Strict (runStateT, get, gets, modify', MonadState)
 import Control.Monad.Random.Strict (evalRandT, MonadRandom, RandT, getRandom, getRandomR)
@@ -45,7 +45,7 @@ import Echidna.Types.Random (rElem)
 import qualified Data.List.NonEmpty as NE
 import Echidna.Types.Agent
 import Echidna.Types.Campaign (WorkerState(..), CampaignConf(..), emptySampleStats, maxSampledFunctions)
-import Echidna.Types.Config (Env(..), EConfig(..))
+import Echidna.Types.Config (Env(..), EConfig(..), markInitialCorpusReplayWorkerComplete)
 import Echidna.Types.InterWorker (AgentId(..), Bus, WrappedMessage(..), Message(..), FuzzerCmd(..))
 import Echidna.Types.Test (EchidnaTest(..), TestState(..), TestType(..), isOpen, isOptimizationTest)
 import Echidna.Types.Tx (Tx, TxResult(..), getResult)
@@ -104,6 +104,8 @@ instance Agent FuzzerAgent where
                liftIO $ pushCampaignEvent env (WorkerEvent workerId FuzzWorker (Worker.Log ("Starting FuzzerAgent " ++ show workerId)))
                callback
                void $ replayCorpus callback vm corpus
+               unless (null corpus) $
+                 liftIO $ markInitialCorpusReplayWorkerComplete env.initialCorpusReplayRef
                workerChan <- liftIO $ atomically $ dupTChan bus
                fuzzerLoop callback vm limit workerChan
 

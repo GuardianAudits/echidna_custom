@@ -51,7 +51,10 @@ import Echidna.Types.Coverage (CoverageFileType(..), mergeCoverageMaps, coverage
 import Echidna.Output.Source (coverageLineHits, ppCoveredCode, saveLcovHook)
 import Echidna.Output.Corpus (loadTxs)
 
-import Echidna.Types.Config (Env(..), EConfig(..), MCPConf(..))
+import Echidna.Types.Config
+  ( Env(..), EConfig(..), InitialCorpusReplayState, MCPConf(..)
+  , initialCorpusReplayComplete
+  )
 import Echidna.Types.World (World(..))
 import Echidna.Types.Campaign
   ( getNFuzzWorkers, CampaignConf(..), WorkerState(..)
@@ -642,6 +645,7 @@ data StreamableMCPState = StreamableMCPState
   , streamableMaxRequestBytes :: Int64
   , streamableCoverageRef :: IORef StreamableCoverageState
   , streamableReproducerCacheRef :: IORef (Map StreamableReproducerCacheKey StreamableReproducerVerification)
+  , streamableInitialCorpusReplayRef :: IORef InitialCorpusReplayState
   , streamableInitialVm :: Maybe (VM Concrete)
   }
 
@@ -684,7 +688,7 @@ runStreamableMCPServer env initialVm workerRefs = do
   coverageRef <- newIORef StreamableCoverageNotComputed
   reproducerCacheRef <- newIORef Map.empty
   let conf = env.cfg.mcpConf
-      st = StreamableMCPState eventsRef started (max 1 conf.maxEvents) (fromIntegral $ max 1 conf.maxRequestBytes) coverageRef reproducerCacheRef (Just initialVm)
+      st = StreamableMCPState eventsRef started (max 1 conf.maxEvents) (fromIntegral $ max 1 conf.maxRequestBytes) coverageRef reproducerCacheRef env.initialCorpusReplayRef (Just initialVm)
   ch <- subscribeEvents env
   _ <- forkIO $ forever $ do
     (ts, ev) <- atomically $ readTChan ch
@@ -913,7 +917,7 @@ streamableResourcesRead rid env workerRefs st params =
         Just (String uri) -> do
           result <- readStreamableResource env workerRefs st uri
           pure $ case result of
-            Left msg -> streamableMcpError rid (-32602) msg
+            Left msg -> streamableMcpError rid (streamableResourceErrorCode msg) msg
             Right value ->
               let content = object
                     [ "uri" .= uri
@@ -940,7 +944,9 @@ runStreamableTool env workerRefs st name args =
       case parseStreamableArgs args of
         Left msg -> pure $ StreamableToolError msg
         Right parsed -> either StreamableToolError StreamableToolOk <$> streamableReproducer env st parsed
-    "get_coverage_hits" -> StreamableToolOk <$> streamableCoverageLines env st
+    "get_coverage_hits" -> do
+      result <- streamableCoverageLinesWhenReady env st
+      pure $ either (StreamableToolRpcError streamableCoverageNotReadyCode) StreamableToolOk result
     _ -> pure $ StreamableToolRpcError (-32602) ("Unknown tool: " <> name)
 
 readStreamableResource :: Env -> [IORef WorkerState] -> StreamableMCPState -> Text -> IO (Either Text Value)
@@ -955,7 +961,7 @@ readStreamableResource env workerRefs st uri =
       case streamableReproducersArgsFromQuery env.cfg.mcpConf query of
         Left msg -> pure $ Left msg
         Right parsed -> Right <$> streamableReproducers env st parsed
-    ("echidna://coverage/lines", _) -> Right <$> streamableCoverageLines env st
+    ("echidna://coverage/lines", _) -> streamableCoverageLinesWhenReady env st
     (path, _) | "echidna://run/reproducer/" `T.isPrefixOf` path ->
       streamableReproducer env st (StreamableReproducerArgs . streamableDecodeUriComponent $ T.drop (T.length "echidna://run/reproducer/") path)
     _ -> pure . Left $ "Unknown resource: " <> uri
@@ -1117,6 +1123,24 @@ streamableCoveragePollUsec = 100000
 streamableEmptyCoverageLines :: Value
 streamableEmptyCoverageLines = object []
 
+streamableCoverageNotReadyCode :: Int
+streamableCoverageNotReadyCode = -32002
+
+streamableCoverageNotReadyMessage :: Text
+streamableCoverageNotReadyMessage = "coverage not ready: corpus replay incomplete"
+
+streamableResourceErrorCode :: Text -> Int
+streamableResourceErrorCode msg
+  | msg == streamableCoverageNotReadyMessage = streamableCoverageNotReadyCode
+  | otherwise = -32602
+
+streamableCoverageLinesWhenReady :: Env -> StreamableMCPState -> IO (Either Text Value)
+streamableCoverageLinesWhenReady env st = do
+  ready <- initialCorpusReplayComplete st.streamableInitialCorpusReplayRef
+  if ready
+    then Right <$> streamableCoverageLines env st
+    else pure $ Left streamableCoverageNotReadyMessage
+
 streamableCoverageLines :: Env -> StreamableMCPState -> IO Value
 streamableCoverageLines env st = do
   cached <- readIORef st.streamableCoverageRef
@@ -1172,7 +1196,9 @@ streamableStartCoverageRefresh env st = do
 
 streamableMaybeRefreshCoverage :: Env -> StreamableMCPState -> Worker.CampaignEvent -> IO ()
 streamableMaybeRefreshCoverage env st = \case
-  Worker.WorkerEvent _ _ Worker.NewCoverage{} -> streamableStartCoverageRefresh env st
+  Worker.WorkerEvent _ _ Worker.NewCoverage{} -> do
+    ready <- initialCorpusReplayComplete st.streamableInitialCorpusReplayRef
+    when ready $ streamableStartCoverageRefresh env st
   _ -> pure ()
 
 streamableTestArtifact :: MCPConf -> Int -> EchidnaTest -> Value
