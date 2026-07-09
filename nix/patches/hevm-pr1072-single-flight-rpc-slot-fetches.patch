@@ -1,0 +1,380 @@
+From dd786de6b10e9de965ef773eecec2e4b32db449c Mon Sep 17 00:00:00 2001
+From: Mate Soos <mate.soos@argot.org>
+Date: Wed, 17 Jun 2026 18:01:50 +0200
+Subject: [PATCH] Fetch: single-flight in-flight RPC slot fetches
+
+Concurrent workers racing on the same uncached (block, addr, slot) used to
+each issue an identical eth_getStorageAt before the first result populated the
+cache. Route oracle slot reads through fetchSlotWithCache and add single-flight
+tracking keyed by resolved block, address, and slot, so concurrent callers wait
+for one shared fetch.
+
+This is a tighter reimplementation of the approach in #1070: the single-flight
+logic is a generic, mask-safe `singleFlight` combinator plus a reused
+`lookupSlotCache`, instead of a dedicated owner/waiter ADT and several helpers.
+The owner clears the key and wakes waiters even on (async) exception, so a
+failed fetch is retried by the next caller rather than deadlocking.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ CHANGELOG.md     |   3 ++
+ src/EVM/Fetch.hs | 117 +++++++++++++++++++++++++++++++----------------
+ test/test.hs     | 111 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 191 insertions(+), 40 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index bbb5f3e2..8406199d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ ## Added
+ - RPC retry with exponential backoff and a shared cooldown across workers, so transient
+   network errors and rate limits (e.g. HTTP 429) no longer abort symbolic execution
++- Single-flight for in-flight RPC storage-slot fetches: concurrent workers racing on the same
++  (block, address, slot) now share one `eth_getStorageAt` request instead of each issuing their
++  own, sharply reducing duplicate RPC traffic during fork fuzzing
+ - Support for a subset of the [`expectRevert`](https://www.getfoundry.sh/reference/cheatcodes/expect-revert#expectrevert) family of foundry cheatcodes:
+   - `expectRevert()`
+   - `expectRevert(bytes)`
+diff --git a/src/EVM/Fetch.hs b/src/EVM/Fetch.hs
+index c4f6e78c..f25f6c1b 100644
+--- a/src/EVM/Fetch.hs
++++ b/src/EVM/Fetch.hs
+@@ -19,9 +19,10 @@ module EVM.Fetch
+   , saveCache
+   , RPCContract (..)
+   , makeContractFromRPC
+-  -- Below 4 are needed for Echidna
++  -- Below 5 are needed for Echidna and deterministic fetch tests
+   , fetchSlotWithSession
+   , fetchSlotWithCache
++  , fetchSlotWithCacheUsing
+   , fetchWithSession
+   , getCacheState
+   , FetchStatus(..)
+@@ -47,7 +48,7 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
+ import Data.Aeson.Encode.Pretty (encodePretty)
+ import qualified Data.ByteString.Lazy as BSL
+ import Data.Bifunctor (first)
+-import Control.Exception (SomeException, SomeAsyncException(..), try, catches, Handler(..), throwIO)
++import Control.Exception (SomeException, SomeAsyncException(..), try, catches, Handler(..), throwIO, mask)
+ 
+ import Data.Aeson hiding (Error)
+ import Data.Aeson.Optics
+@@ -70,7 +71,7 @@ import Control.Monad (when)
+ import EVM.Effects
+ import qualified EVM.Expr as Expr
+ import Control.Concurrent (threadDelay)
+-import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_)
++import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar, putMVar, readMVar, modifyMVar, modifyMVar_)
+ import Data.IORef (IORef, newIORef, readIORef, atomicModifyIORef')
+ import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime, addUTCTime)
+ import System.Random (randomRIO)
+@@ -98,8 +99,15 @@ data Session = Session
+   -- Shared rate limit cooldown across workers. When any worker hits a
+   -- rate limit, it sets a deadline; other workers wait before retrying.
+   , rpcThrottle     :: IORef (Maybe UTCTime)
++  -- Single-flight tracking for in-flight slot fetches. Concurrent callers
++  -- racing on the same (block, addr, slot) share one RPC request.
++  , inFlightSlots   :: MVar (Map.Map SlotFetchKey (MVar SlotFetchResult))
+   }
+ 
++type SlotFetchKey = (BlockNumber, Addr, W256)
++
++type SlotFetchResult = Either SomeException (FetchResult W256)
++
+ data FetchCache = FetchCache
+   { contractCache :: Map.Map Addr RPCContract
+   , slotCache     :: Map.Map (Addr, W256) W256
+@@ -146,7 +154,7 @@ data RpcQuery a where
+   QueryChainId ::                 RpcQuery W256
+ 
+ data BlockNumber = Latest | BlockNumber W256
+-  deriving (Show, Eq)
++  deriving (Show, Eq, Ord)
+ 
+ deriving instance Show (RpcQuery a)
+ 
+@@ -420,33 +428,71 @@ makeContractFromRPC (RPCContract (ByteStringS code) nonce balance) =
+ 
+ -- Needed for Echidna only
+ fetchSlotWithCache :: Config -> Session -> BlockNumber -> Text -> Addr -> W256 -> IO (FetchResult W256)
+-fetchSlotWithCache conf sess nPre url addr slot = do
++fetchSlotWithCache conf sess nPre url =
++  fetchSlotWithCacheUsing
++    (\n a s -> fetchQuery n (fetchWithRetry conf.debug url sess) (QuerySlot a s))
++    conf sess nPre url
++
++-- | Cache-aware, single-flighting slot fetch. The actual RPC is injected so
++-- tests can drive it deterministically. Concurrent callers racing on the same
++-- (block, addr, slot) share a single fetch; everyone else hits the cache.
++fetchSlotWithCacheUsing
++  :: (BlockNumber -> Addr -> W256 -> IO (Either Text W256))
++  -> Config -> Session -> BlockNumber -> Text -> Addr -> W256 -> IO (FetchResult W256)
++fetchSlotWithCacheUsing fetch conf sess nPre url addr slot = do
+   n <- getLatestBlockNum conf sess nPre url
+-  -- Check successful cache
++  let fetchOnce = lookupSlotCache conf sess addr slot >>= \case
++        Just res -> pure res  -- another owner just populated the cache
++        Nothing -> do
++          when conf.debug $ putStrLn $ "-> Fetching slot " <> show slot <> " at " <> show addr
++          fetch n addr slot >>= \case
++            Right val -> do
++              modifyMVar_ sess.sharedCache $ \c ->
++                pure $ c { slotCache = Map.insert (addr, slot) val c.slotCache }
++              pure (FetchSuccess val Fresh)
++            Left err -> pure (FetchError err)
++  lookupSlotCache conf sess addr slot >>= \case
++    Just res -> pure res  -- fast path: no single-flight lock on cache hits
++    Nothing -> singleFlight sess.inFlightSlots (n, addr, slot) fetchOnce
++
++-- | Look up a slot in the success/failure caches, returning Nothing if it must
++-- be fetched.
++lookupSlotCache :: Config -> Session -> Addr -> W256 -> IO (Maybe (FetchResult W256))
++lookupSlotCache conf sess addr slot = do
+   cache <- readMVar sess.sharedCache
+   case Map.lookup (addr, slot) cache.slotCache of
+     Just s -> do
+-      when (conf.debug) $ putStrLn $ "-> Using cached slot value for slot " <> show slot <> " at " <> show addr
+-      pure (FetchSuccess s Cached)
++      when conf.debug $ putStrLn $ "-> Using cached slot value for slot " <> show slot <> " at " <> show addr
++      pure (Just (FetchSuccess s Cached))
+     Nothing -> do
+-      -- Check failure cache
+       failures <- readMVar sess.failedSlots
+       if Set.member (addr, slot) failures
+       then do
+-        when (conf.debug) $ putStrLn $ "-> Skipping previously failed slot " <> show slot <> " at " <> show addr
+-        pure (FetchFailure Cached)
+-      else do
+-        -- Attempt fetch
+-        when (conf.debug) $ putStrLn $ "-> Fetching slot " <> show slot <> " at " <> show addr
+-        ret <- fetchQuery n (fetchWithRetry conf.debug url sess) (QuerySlot addr slot)
+-        case ret of
+-          Right val -> do
+-            -- Success: cache it
+-            modifyMVar_ sess.sharedCache $ \c ->
+-              pure $ c { slotCache = Map.insert (addr, slot) val c.slotCache }
+-            pure (FetchSuccess val Fresh)
+-          Left err -> do
+-            pure (FetchError err)
++        when conf.debug $ putStrLn $ "-> Skipping previously failed slot " <> show slot <> " at " <> show addr
++        pure (Just (FetchFailure Cached))
++      else pure Nothing
++
++-- | Run @action@ at most once per key: concurrent callers with the same key
++-- share the single result. The owner removes the key and wakes waiters even if
++-- @action@ throws (including async exceptions), so a failed fetch is retried by
++-- the next caller rather than deadlocking.
++singleFlight
++  :: Ord k
++  => MVar (Map.Map k (MVar (Either SomeException a))) -> k -> IO a -> IO a
++singleFlight inFlight fetchKey action = mask $ \restore -> do
++  (result, owner) <- modifyMVar inFlight $ \entries ->
++    case Map.lookup fetchKey entries of
++      Just result -> pure (entries, (result, False))
++      Nothing -> do
++        result <- newEmptyMVar
++        pure (Map.insert fetchKey result entries, (result, True))
++  if not owner
++  then restore (readMVar result) >>= either throwIO pure
++  else do
++    outcome <- try (restore action)
++    putMVar result outcome
++    modifyMVar_ inFlight $ pure . Map.delete fetchKey
++    either throwIO pure outcome
+ 
+ -- | Get the complete cache state including both successes and failures
+ -- Returns in the format expected by Echidna's UI:
+@@ -555,7 +601,8 @@ mkSession cacheDir mblock = do
+   failedContracts <- liftIO $ newMVar Set.empty
+   failedSlots <- liftIO $ newMVar Set.empty
+   rpcThrottle <- liftIO $ newIORef Nothing
+-  pure $ Session sess latestBlockNum cache cacheDir failedContracts failedSlots rpcThrottle
++  inFlightSlots <- liftIO $ newMVar Map.empty
++  pure $ Session sess latestBlockNum cache cacheDir failedContracts failedSlots rpcThrottle inFlightSlots
+ 
+ mkSessionWithoutCache :: App m => m Session
+ mkSessionWithoutCache = mkSession Nothing Nothing
+@@ -626,22 +673,12 @@ oracle solvers preSess rpcInfo q = do
+       | otherwise -> do
+         let sess = fromMaybe (internalError $ "oracle: no session provided for fetch addr: " ++ show addr) preSess
+         conf <- readConfig
+-        cache <- liftIO $ readMVar sess.sharedCache
+-        case Map.lookup (addr, slot) cache.slotCache of
+-          Just s -> do
+-            when (conf.debug) $ liftIO $ putStrLn $ "-> Using cached slot value for slot " <> show slot <> " at " <> show addr
+-            pure $ continue s
+-          Nothing -> do
+-            when (conf.debug) $ liftIO $ putStrLn $ "Fetching slot " <> (show slot) <> " at " <> (show addr)
+-            let (block, url) = fromJust rpcInfo.blockNumURL
+-            n <- liftIO $ getLatestBlockNum conf sess block url
+-            ret <- liftIO $ fetchQuery n (fetchWithRetry conf.debug url sess) (QuerySlot addr slot)
+-            case ret of
+-              Right val -> do
+-                liftIO $ modifyMVar_ sess.sharedCache $ \c ->
+-                  pure $ c { slotCache = Map.insert (addr, slot) val c.slotCache }
+-                pure $ continue val
+-              Left err -> internalError $ "oracle error: " ++ show err
++        let (block, url) = fromJust rpcInfo.blockNumURL
++        res <- liftIO $ fetchSlotWithCache conf sess block url addr slot
++        case res of
++          FetchSuccess val _ -> pure $ continue val
++          FetchFailure _ -> internalError $ "oracle error: " ++ show q
++          FetchError err -> internalError $ "oracle error: " ++ show err
+ 
+     PleaseReadEnv variable continue -> do
+       value <- liftIO $ lookupEnv variable
+diff --git a/test/test.hs b/test/test.hs
+index 901663cc..f173ddca 100644
+--- a/test/test.hs
++++ b/test/test.hs
+@@ -8,6 +8,9 @@ module Main where
+ import Prelude hiding (LT, GT)
+ 
+ import GHC.TypeLits
++import Control.Concurrent (forkIO, threadDelay)
++import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, tryPutMVar)
++import Control.Exception (SomeException, try)
+ import Control.Monad
+ import Control.Monad.ST (stToIO)
+ import Control.Monad.State.Strict
+@@ -21,6 +24,7 @@ import Data.ByteString.Lazy qualified as BSLazy
+ import Data.Binary.Put (runPut)
+ import Data.Binary.Get (runGetOrFail)
+ import Data.Either
++import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+ import Data.List qualified as List
+ import Data.Map.Strict qualified as Map
+ import Data.Maybe
+@@ -40,6 +44,7 @@ import Test.Tasty.HUnit
+ import Test.Tasty.Runners hiding (Failure, Success)
+ import Test.Tasty.ExpectedFailure
+ import Text.ParserCombinators.ReadP (readP_to_S)
++import System.Timeout (timeout)
+ import Witch (unsafeInto, into)
+ 
+ import Optics.Core hiding (pre, re, elements)
+@@ -123,6 +128,53 @@ withCVC5Solver = withSolvers CVC5 3 Nothing defMemLimit
+ withBitwuzlaSolver :: App m => (SolverGroup -> m a) -> m a
+ withBitwuzlaSolver = withSolvers Bitwuzla 3 Nothing defMemLimit
+ 
++waitForTest :: String -> IO a -> IO a
++waitForTest name action = timeout 5_000_000 action >>= \case
++  Just result -> pure result
++  Nothing -> assertFailure $ name <> " timed out"
++
++-- | Fork @count@ concurrent slot fetches that all start together, optionally
++-- gating the underlying fetcher so the owner is held in-flight while waiters
++-- pile up. Returns each thread's result (or exception).
++runConcurrentSlotFetches
++  :: Fetch.Session
++  -> (Fetch.BlockNumber -> Addr -> W256 -> IO (Either Text W256))
++  -> Int -> Addr -> W256 -> Maybe (MVar (), MVar ())
++  -> IO [Either SomeException (Fetch.FetchResult W256)]
++runConcurrentSlotFetches sess fetcher count addr slot gate = do
++  start <- newEmptyMVar
++  doneVars <- replicateM count newEmptyMVar
++  forM_ doneVars $ \done -> forkIO $ do
++    readMVar start
++    result <- try $ Fetch.fetchSlotWithCacheUsing fetcher defaultConfig sess (Fetch.BlockNumber 1) (T.pack "unused") addr slot
++    putMVar done result
++  putMVar start ()
++  forM_ gate $ \(started, release) -> do
++    waitForTest "owner fetch start" (readMVar started)
++    threadDelay 100_000
++    putMVar release ()
++  waitForTest "slot fetches" (mapM readMVar doneVars)
++
++-- | Like 'runConcurrentSlotFetches' but one thread per distinct slot: distinct
++-- keys must NOT be merged, so the fetcher fires once per slot.
++runConcurrentSlotFetchesForSlots
++  :: Fetch.Session
++  -> (Fetch.BlockNumber -> Addr -> W256 -> IO (Either Text W256))
++  -> Addr -> [W256] -> MVar ()
++  -> IO [Either SomeException (Fetch.FetchResult W256)]
++runConcurrentSlotFetchesForSlots sess fetcher addr slots release = do
++  start <- newEmptyMVar
++  doneVars <- forM slots $ \slot -> do
++    done <- newEmptyMVar
++    _ <- forkIO $ do
++      readMVar start
++      result <- try $ Fetch.fetchSlotWithCacheUsing fetcher defaultConfig sess (Fetch.BlockNumber 1) (T.pack "unused") addr slot
++      putMVar done result
++    pure done
++  putMVar start ()
++  threadDelay 100_000
++  putMVar release ()
++  waitForTest "slot fetches" (mapM readMVar doneVars)
+ 
+ main :: IO ()
+ main = defaultMain tests
+@@ -191,6 +243,65 @@ tests = testGroup "hevm"
+ 
+         -- there won't be query now as accessStorage uses fetch cache
+         assertBoolM (show vm4.result) (isNothing vm4.result)
++    , testCase "fetchSlotWithCache single-flights concurrent same slot" $ runEnv testEnv $ do
++        sess <- Fetch.mkSessionWithoutCache
++        counter <- liftIO $ newIORef (0 :: Int)
++        started <- liftIO newEmptyMVar
++        release <- liftIO newEmptyMVar
++        let fetcher _ _ _ = do
++              _ <- atomicModifyIORef' counter $ \n -> (n + 1, ())
++              _ <- tryPutMVar started ()
++              readMVar release
++              pure (Right 0x1234)
++        results <- liftIO $ runConcurrentSlotFetches sess fetcher 8 0x1000 0x1 (Just (started, release))
++        assertEqualM "underlying fetch count" 1 =<< liftIO (readIORef counter)
++        let successes = rights results
++        assertEqualM "all calls should succeed" 8 (length successes)
++        assertEqualM "values" (replicate 8 0x1234) [val | Fetch.FetchSuccess val _ <- successes]
++    , testCase "fetchSlotWithCache does not merge different slots" $ runEnv testEnv $ do
++        sess <- Fetch.mkSessionWithoutCache
++        counter <- liftIO $ newIORef (0 :: Int)
++        release <- liftIO newEmptyMVar
++        let slots = [0x1, 0x2, 0x3, 0x4]
++            fetcher _ _ slot = do
++              _ <- atomicModifyIORef' counter $ \n -> (n + 1, ())
++              readMVar release
++              pure (Right slot)
++        results <- liftIO $ runConcurrentSlotFetchesForSlots sess fetcher 0x1000 slots release
++        assertEqualM "underlying fetch count" (length slots) =<< liftIO (readIORef counter)
++        assertEqualM "values" slots [val | Fetch.FetchSuccess val _ <- rights results]
++    , testCase "fetchSlotWithCache owner error wakes waiters and clears in-flight entry" $ runEnv testEnv $ do
++        sess <- Fetch.mkSessionWithoutCache
++        counter <- liftIO $ newIORef (0 :: Int)
++        started <- liftIO newEmptyMVar
++        release <- liftIO newEmptyMVar
++        let fetcher _ _ _ = do
++              _ <- atomicModifyIORef' counter $ \n -> (n + 1, ())
++              _ <- tryPutMVar started ()
++              readMVar release
++              pure (Left (T.pack "boom"))
++        results <- liftIO $ runConcurrentSlotFetches sess fetcher 8 0x1000 0x2 (Just (started, release))
++        assertEqualM "all calls should complete with the same fetch error"
++          (replicate 8 (Fetch.FetchError (T.pack "boom")))
++          (rights results)
++        retry <- liftIO $ Fetch.fetchSlotWithCacheUsing fetcher defaultConfig sess (Fetch.BlockNumber 1) (T.pack "unused") 0x1000 0x2
++        assertEqualM "retry should fetch again" (Fetch.FetchError (T.pack "boom")) retry
++        assertEqualM "underlying fetch count after retry" 2 =<< liftIO (readIORef counter)
++    , testCase "fetchSlotWithCache owner exception wakes waiters and clears in-flight entry" $ runEnv testEnv $ do
++        sess <- Fetch.mkSessionWithoutCache
++        counter <- liftIO $ newIORef (0 :: Int)
++        started <- liftIO newEmptyMVar
++        release <- liftIO newEmptyMVar
++        let fetcher _ _ _ = do
++              _ <- atomicModifyIORef' counter $ \n -> (n + 1, ())
++              _ <- tryPutMVar started ()
++              readMVar release
++              ioError (userError "boom")
++        results <- liftIO $ runConcurrentSlotFetches sess fetcher 8 0x1000 0x3 (Just (started, release))
++        assertEqualM "all calls should complete with exceptions" 8 (length (lefts results))
++        retry <- liftIO $ try $ Fetch.fetchSlotWithCacheUsing fetcher defaultConfig sess (Fetch.BlockNumber 1) (T.pack "unused") 0x1000 0x3
++        assertBoolM "retry should throw again" (isLeft (retry :: Either SomeException (Fetch.FetchResult W256)))
++        assertEqualM "underlying fetch count after retry" 2 =<< liftIO (readIORef counter)
+     ]
+   , testGroup "ABI"
+     [ testProperty "Put/get inverse" $ \x ->
+-- 
+2.39.5 (Apple Git-154)
+
