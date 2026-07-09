@@ -67,6 +67,7 @@
               sha256 = "sha256-wHkH26sfGLEL6XFYl+qZUPdWRZLnoftTqpufy5ASX7k=";
             };
             patches = [
+              ./nix/patches/hevm-pr1072-single-flight-rpc-slot-fetches.patch
               ./nix/patches/hevm-storage-recording-and-token-deal.patch
               ./nix/patches/hevm-concrete-memory-no-overgrow.patch
               ./nix/patches/hevm-compact-trace-retention.patch
