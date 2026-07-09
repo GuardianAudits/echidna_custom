@@ -149,6 +149,7 @@ execTxWith executeTx tx = do
               EVM.Fetch.FetchSuccess value status -> do
                 -- Log only in text mode, ignoring quiet flag as this is important info
                 when (status == EVM.Fetch.Fresh) $ logMsg $ "Fetched new slot: " <> show q
+                when (status == EVM.Fetch.Cached) $ logMsg $ "Using cached slot value: " <> show q
                 fromEVM (continuation value)
               EVM.Fetch.FetchFailure _ -> do
                 fromEVM (continuation 0)
