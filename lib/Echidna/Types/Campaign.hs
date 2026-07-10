@@ -135,6 +135,11 @@ data CampaignConf = CampaignConf
     -- ^ List of file formats to save coverage reports
   , coverageExcludes   :: [Text]
     -- ^ List of glob patterns for files/directories to exclude from coverage reports
+  , coverageIncludes   :: [Text]
+    -- ^ List of glob patterns for files/directories to include in coverage
+    -- reports. When non-empty, ONLY files matching one of these patterns are
+    -- mapped (everything else is skipped before the expensive source-map ->
+    -- line resolution); excludes are still applied on top. Empty = include all.
   , coverageLineHits :: Bool
     -- ^ Whether to include per-line hit counts in coverage outputs.
   , workers            :: Maybe Word8

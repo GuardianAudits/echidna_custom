@@ -150,7 +150,7 @@ main = withUtf8 $ withCP65001 $ withStrippedExceptions $ do
       saveCoverages env runId dir buildOutput.sources contracts
       when cfg.campaignConf.coverageLineHits $ do
         covMap <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
-        let hits = coverageLineHits buildOutput.sources covMap contracts cfg.campaignConf.coverageExcludes
+        let hits = coverageLineHits buildOutput.sources covMap contracts cfg.campaignConf.coverageIncludes cfg.campaignConf.coverageExcludes
         LBS.writeFile (dir </> "coverage_hits.json") (encode hits)
 
   if isSuccessful tests then exitSuccess else exitWith (ExitFailure 1)

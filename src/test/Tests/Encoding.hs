@@ -47,7 +47,7 @@ encodingJSONTests =
               , asts = mempty
               }
             covMap = Map.singleton (0 :: W256) VU.empty
-            output = ppCoveredCode Txt sourceCache [] covMap Nothing "test" []
+            output = ppCoveredCode Txt sourceCache [] covMap Nothing "test" [] []
         assertBool "expected escaped invalid byte in coverage output" ("\\xfd" `T.isInfixOf` output)
-        coverageLineHits sourceCache covMap [] [] @?= Map.singleton "Bad.sol" Map.empty
+        coverageLineHits sourceCache covMap [] [] [] @?= Map.singleton "Bad.sol" Map.empty
     ]

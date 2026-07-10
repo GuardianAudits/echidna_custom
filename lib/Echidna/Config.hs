@@ -126,6 +126,7 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "mutConsts" ..!= defaultMutationConsts
         <*> v ..:? "coverageFormats" ..!= [Txt,Html,Lcov]
         <*> v ..:? "coverageExcludes" ..!= []
+        <*> v ..:? "coverageIncludes" ..!= []
         <*> v ..:? "coverageLineHits" ..!= True
         <*> v ..:? "workers"
         <*> v ..:? "server"

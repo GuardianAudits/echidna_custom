@@ -487,7 +487,7 @@ showCoverageTool args env _ = do
             let contractsToUse = if null activeContracts then [solc] else activeContracts
 
             -- Generate full report using all active contracts, then filter by relevant files
-            let fullReport = ppCoveredCode Txt sc contractsToUse covMap Nothing "" []
+            let fullReport = ppCoveredCode Txt sc contractsToUse covMap Nothing "" env.cfg.campaignConf.coverageIncludes env.cfg.campaignConf.coverageExcludes
             let filterReport text =
                   let ls = T.lines text
                       splitSections [] = []
@@ -1176,7 +1176,7 @@ streamableComputeCoverageLines :: Env -> IO Value
 streamableComputeCoverageLines env = do
   covMap <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
   let contracts = Map.elems env.dapp.solcByName
-      hits = coverageLineHits env.sourceCache covMap contracts env.cfg.campaignConf.coverageExcludes
+      hits = coverageLineHits env.sourceCache covMap contracts env.cfg.campaignConf.coverageIncludes env.cfg.campaignConf.coverageExcludes
       snapshot = toJSON hits
   BL8.length (encode snapshot) `seq` pure snapshot
 

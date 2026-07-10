@@ -31,7 +31,7 @@ import Text.Mustache.Types (Template, Value(..))
 import Text.Printf (printf)
 
 import EVM.Dapp (srcMapCodePos, DappInfo(..))
-import EVM.Solidity (SourceCache(..), SrcMap, SolcContract(..))
+import EVM.Solidity (SourceCache(..), SrcMap(file), SolcContract(..))
 
 import Echidna.Encoding (decodeUtf8OrEscaped)
 import Echidna.SourceAnalysis.Slither (AssertLocation(..), assertLocationList, SlitherInfo(..))
@@ -44,14 +44,41 @@ import Echidna.Types.Tx (TxResult(..))
 coverageTemplate :: Template
 coverageTemplate = $(embedTemplate ["lib/Echidna/Output/assets"] "coverage.mustache")
 
--- | Filter files based on exclude patterns, using relative paths from common prefix
-filterExcludedFiles :: [Text] -> FilePath -> [(FilePath, V.Vector Text)] -> [(FilePath, V.Vector Text)]
-filterExcludedFiles excludePatterns commonPrefix allFiles =
-  let patterns = map (Glob.compile . T.unpack) excludePatterns
-      isExcluded filePath =
-        let relativePath = makeRelativePath commonPrefix filePath
-        in any (`Glob.match` relativePath) patterns
-  in filter (not . isExcluded . fst) allFiles
+-- | Decide whether a source path (relative to the common prefix) should be
+-- mapped for coverage. When includePatterns is non-empty, ONLY paths matching
+-- at least one include are kept; excludePatterns are then subtracted. An empty
+-- includePatterns means "all files" (backwards-compatible with exclude-only
+-- configs). Include-only is the robust lever for fork-mode suites: rather than
+-- enumerating every vendored/forked dependency path family to exclude (lib/,
+-- __onchain/, ...), we allowlist just the project + harness sources so the
+-- expensive per-op source-map -> line resolution (srcMapCodePos) is skipped for
+-- everything else.
+shouldMapPath :: [Glob.Pattern] -> [Glob.Pattern] -> FilePath -> Bool
+shouldMapPath includes excludes relPath =
+  let included = null includes || any (`Glob.match` relPath) includes
+      excluded = any (`Glob.match` relPath) excludes
+  in included && not excluded
+
+-- | Filter files down to those that should be mapped for coverage, using
+-- relative paths from the common prefix.
+filterCoverageFiles :: [Text] -> [Text] -> FilePath -> [(FilePath, V.Vector Text)] -> [(FilePath, V.Vector Text)]
+filterCoverageFiles includePatterns excludePatterns commonPrefix allFiles =
+  let includes = map (Glob.compile . T.unpack) includePatterns
+      excludes = map (Glob.compile . T.unpack) excludePatterns
+      keep filePath = shouldMapPath includes excludes (makeRelativePath commonPrefix filePath)
+  in filter (keep . fst) allFiles
+
+-- | Compute the set of source-file ids that should be SKIPPED for coverage
+-- (i.e. NOT included, or explicitly excluded). Skipping at the source-id level
+-- lets us avoid the expensive per-op source-map -> line resolution
+-- (srcMapCodePos) for forked / vendored sources entirely, rather than only
+-- trimming them from the written output afterwards.
+excludedSourceFileIds :: SourceCache -> [Text] -> [Text] -> FilePath -> S.Set Int
+excludedSourceFileIds sc includePatterns excludePatterns commonPrefix =
+  let includes = map (Glob.compile . T.unpack) includePatterns
+      excludes = map (Glob.compile . T.unpack) excludePatterns
+      skip filePath = not (shouldMapPath includes excludes (makeRelativePath commonPrefix filePath))
+  in S.fromList [ fileId | (fileId, (fp, _)) <- Map.toList sc.files, skip fp ]
 
 saveCoverages
   :: Env
@@ -63,9 +90,10 @@ saveCoverages
 saveCoverages env seed d sc cs = do
   let fileTypes = env.cfg.campaignConf.coverageFormats
       coverageExcludes = env.cfg.campaignConf.coverageExcludes
+      coverageIncludes = env.cfg.campaignConf.coverageIncludes
       projectName = env.cfg.projectName
   coverage <- mergeCoverageMaps env.dapp env.coverageRefInit env.coverageRefRuntime
-  mapM_ (\ty -> saveCoverage ty seed d sc cs coverage projectName coverageExcludes) fileTypes
+  mapM_ (\ty -> saveCoverage ty seed d sc cs coverage projectName coverageIncludes coverageExcludes) fileTypes
 
 saveCoverage
   :: CoverageFileType
@@ -76,13 +104,14 @@ saveCoverage
   -> FrozenCoverageMap
   -> Maybe Text
   -> [Text]
+  -> [Text]
   -> IO ()
-saveCoverage fileType seed d sc cs covMap projectName excludePatterns = do
+saveCoverage fileType seed d sc cs covMap projectName includePatterns excludePatterns = do
   let extension = coverageFileExtension fileType
       fn = d </> "covered." <> show seed <> extension
   currentTime <- getCurrentTime
   let timestamp = T.pack $ formatTime defaultTimeLocale "%B %d, %Y at %H:%M:%S UTC" currentTime
-      cc = ppCoveredCode fileType sc cs covMap projectName timestamp excludePatterns
+      cc = ppCoveredCode fileType sc cs covMap projectName timestamp includePatterns excludePatterns
   createDirectoryIfMissing True d
   writeFile fn cc
 
@@ -103,15 +132,16 @@ saveLcovHook env d sc cs = do
   currentTime <- getCurrentTime
   let timestamp = formatTime defaultTimeLocale "%Y%m%d_%H%M%S" currentTime
       fn = d </> "hook_" <> timestamp <> ".lcov"
+      includePatterns = env.cfg.campaignConf.coverageIncludes
       excludePatterns = env.cfg.campaignConf.coverageExcludes
-      cc = ppCoveredCode Lcov sc cs coverage Nothing (T.pack timestamp) excludePatterns
+      cc = ppCoveredCode Lcov sc cs coverage Nothing (T.pack timestamp) includePatterns excludePatterns
   createDirectoryIfMissing True d
   writeFile fn cc
   pure fn
 
 -- | Pretty-print the covered code
-ppCoveredCode :: CoverageFileType -> SourceCache -> [SolcContract] -> FrozenCoverageMap -> Maybe Text -> Text -> [Text] -> Text
-ppCoveredCode fileType sc cs s projectName timestamp excludePatterns
+ppCoveredCode :: CoverageFileType -> SourceCache -> [SolcContract] -> FrozenCoverageMap -> Maybe Text -> Text -> [Text] -> [Text] -> Text
+ppCoveredCode fileType sc cs s projectName timestamp includePatterns excludePatterns
   | null s = "Coverage map is empty"
   | Html <- fileType = htmlTemplate filteredFiles runtimeLinesMap covLines projectName timestamp commonPrefix
   | otherwise = let
@@ -134,16 +164,19 @@ ppCoveredCode fileType sc cs s projectName timestamp excludePatterns
       Txt  -> ls
     in topHeader <> T.unlines (map ppFile filteredFiles)
   where
-    -- List of covered lines during the fuzzing campaign
-    covLines = srcMapCov sc s cs
     -- Collect all the possible lines from all the files
     allFiles = decodedSourceFiles sc
     -- Find common path prefix for filtering
     commonPrefix = findCommonPathPrefix (map fst allFiles)
-    -- Filter out excluded files using relative paths
-    filteredFiles = filterExcludedFiles excludePatterns commonPrefix allFiles
+    -- Source-file ids not selected for coverage (not included, or excluded);
+    -- skipped before the expensive per-op source-map -> line resolution
+    excludedFileIds = excludedSourceFileIds sc includePatterns excludePatterns commonPrefix
+    -- List of covered lines during the fuzzing campaign
+    covLines = srcMapCov sc s cs excludedFileIds
+    -- Keep only files selected for coverage using relative paths
+    filteredFiles = filterCoverageFiles includePatterns excludePatterns commonPrefix allFiles
     -- Excludes lines such as comments or blanks
-    runtimeLinesMap = buildRuntimeLinesMap sc cs
+    runtimeLinesMap = buildRuntimeLinesMap sc cs excludedFileIds
 
 -- | Mark one particular line, from a list of lines, keeping the order of them
 markLines :: CoverageFileType -> V.Vector Text -> S.Set Int -> Map Int [TxResult] -> V.Vector Text
@@ -188,8 +221,8 @@ getMarker ErrorOutOfGas = 'o'
 getMarker _             = 'e'
 
 -- | Given a source cache, a coverage map, a contract returns a list of covered lines
-srcMapCov :: SourceCache -> FrozenCoverageMap -> [SolcContract] -> Map FilePath (Map Int [TxResult])
-srcMapCov sc covMap contracts =
+srcMapCov :: SourceCache -> FrozenCoverageMap -> [SolcContract] -> S.Set Int -> Map FilePath (Map Int [TxResult])
+srcMapCov sc covMap contracts excludedFileIds =
   Map.unionsWith Map.union $ linesCovered <$> contracts
   where
   linesCovered :: SolcContract -> Map FilePath (Map Int [TxResult])
@@ -199,6 +232,7 @@ srcMapCov sc covMap contracts =
         (-1, _, _) -> acc -- not covered
         (opIx, _stackDepths, txResults) ->
           case srcMapForOpLocation c opIx of
+            Just srcMap | S.member srcMap.file excludedFileIds -> acc
             Just srcMap ->
               case srcMapCodePos sc srcMap of
                 Just (file, line) ->
@@ -222,14 +256,16 @@ coverageLineHits
   -> FrozenCoverageMap
   -> [SolcContract]
   -> [Text]
+  -> [Text]
   -> Map FilePath (Map Int Word64)
-coverageLineHits sc covMap contracts excludePatterns =
+coverageLineHits sc covMap contracts includePatterns excludePatterns =
   let
-    covLines = srcMapCov sc covMap contracts
     allFiles = decodedSourceFiles sc
     commonPrefix = findCommonPathPrefix (map fst allFiles)
-    filteredFiles = filterExcludedFiles excludePatterns commonPrefix allFiles
-    runtimeLinesMap = buildRuntimeLinesMap sc contracts
+    excludedFileIds = excludedSourceFileIds sc includePatterns excludePatterns commonPrefix
+    covLines = srcMapCov sc covMap contracts excludedFileIds
+    filteredFiles = filterCoverageFiles includePatterns excludePatterns commonPrefix allFiles
+    runtimeLinesMap = buildRuntimeLinesMap sc contracts excludedFileIds
     fileLineHits srcPath =
       let runtimeLines = fromMaybe mempty $ Map.lookup srcPath runtimeLinesMap
           covered = fromMaybe Map.empty (Map.lookup srcPath covLines)
@@ -251,13 +287,13 @@ srcMapForOpLocation contract opIx =
 
 -- | Builds a Map from file paths to lines that can be executed, this excludes
 -- for example lines with comments
-buildRuntimeLinesMap :: SourceCache -> [SolcContract] -> Map FilePath (S.Set Int)
-buildRuntimeLinesMap sc contracts =
+buildRuntimeLinesMap :: SourceCache -> [SolcContract] -> S.Set Int -> Map FilePath (S.Set Int)
+buildRuntimeLinesMap sc contracts excludedFileIds =
   Map.fromListWith (<>)
     [(k, S.singleton v) | (k, v) <- mapMaybe (srcMapCodePos sc) srcMaps]
   where
-  srcMaps = concatMap
-    (\c -> toList $ c.runtimeSrcmap <> c.creationSrcmap) contracts
+  srcMaps = filter (\sm -> not (S.member sm.file excludedFileIds)) $
+    concatMap (\c -> toList $ c.runtimeSrcmap <> c.creationSrcmap) contracts
 
 -- | Check that all assertions were hit, and log a warning if they weren't
 checkAssertionsCoverage
@@ -269,7 +305,7 @@ checkAssertionsCoverage sc env = do
   let
     cs = Map.elems env.dapp.solcByName
     asserts = maybe [] (concatMap assertLocationList . Map.elems . (.asserts)) env.slitherInfo
-    covLines = srcMapCov sc covMap cs
+    covLines = srcMapCov sc covMap cs S.empty
   mapM_ (checkAssertionReached covLines) asserts
 
 -- | Helper function for `checkAssertionsCoverage` which checks a single assertion
