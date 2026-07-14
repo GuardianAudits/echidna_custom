@@ -129,7 +129,7 @@ mkEnv cfg buildOutput tests world slitherInfo = do
   coverageRefInit <- newIORef mempty
   coverageRefRuntime <- newIORef mempty
   corpusRef <- newIORef mempty
-  initialCorpusReplayRef <- newIORef InitialCorpusReplayComplete
+  initialCorpusReplayRef <- newIORef (InitialCorpusReplayComplete 0)
   testRefs <- traverse newIORef tests
   fetchSession <- EVM.Fetch.mkSession cfg.campaignConf.corpusDir (fromIntegral <$> cfg.rpcBlock)
   contractNameCache <- newIORef mempty
@@ -139,5 +139,5 @@ mkEnv cfg buildOutput tests world slitherInfo = do
       sourceCache = buildOutput.sources
   pure $ Env { cfg, dapp, sourceCache, codehashMap, fetchSession, contractNameCache
              , chainId, eventQueue, bus, coverageRefInit, coverageRefRuntime, corpusRef, initialCorpusReplayRef, testRefs, world
-             , slitherInfo, useColor
+             , slitherInfo, useColor, compileMs = Nothing
              }

@@ -9,6 +9,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (LocalTime)
 import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 
 import EVM.Dapp (DappInfo)
 import EVM.Fetch qualified as Fetch
@@ -127,36 +128,39 @@ data EConfigWithUsage = EConfigWithUsage
   }
 
 data InitialCorpusReplayState
-  = InitialCorpusReplayComplete
-  | InitialCorpusReplayIncomplete !Int
+  = InitialCorpusReplayComplete !Int
+  | InitialCorpusReplayIncomplete !Int !Word64
   deriving (Eq, Show)
 
 resetInitialCorpusReplayState :: IORef InitialCorpusReplayState -> Int -> IO ()
-resetInitialCorpusReplayState ref pendingWorkers =
-  writeIORef ref $
-    if pendingWorkers <= 0
-      then InitialCorpusReplayComplete
-      else InitialCorpusReplayIncomplete pendingWorkers
+resetInitialCorpusReplayState ref pendingWorkers
+  | pendingWorkers <= 0 = writeIORef ref (InitialCorpusReplayComplete 0)
+  | otherwise = getMonotonicTimeNSec >>= writeIORef ref . InitialCorpusReplayIncomplete pendingWorkers
 
 markInitialCorpusReplayWorkerComplete :: IORef InitialCorpusReplayState -> IO ()
-markInitialCorpusReplayWorkerComplete ref =
+markInitialCorpusReplayWorkerComplete ref = do
+  completedAt <- getMonotonicTimeNSec
   atomicModifyIORef' ref $ \case
-    InitialCorpusReplayComplete -> (InitialCorpusReplayComplete, ())
-    InitialCorpusReplayIncomplete pending
-      | pending <= 1 -> (InitialCorpusReplayComplete, ())
-      | otherwise -> (InitialCorpusReplayIncomplete (pending - 1), ())
+    complete@(InitialCorpusReplayComplete _) -> (complete, ())
+    InitialCorpusReplayIncomplete pending startedAt
+      | pending <= 1 ->
+          let replayMs = fromIntegral $ (completedAt - startedAt) `div` 1_000_000
+          in (InitialCorpusReplayComplete replayMs, ())
+      | otherwise -> (InitialCorpusReplayIncomplete (pending - 1) startedAt, ())
+
+initialCorpusReplayStatus :: IORef InitialCorpusReplayState -> IO (Bool, Maybe Int)
+initialCorpusReplayStatus ref = readIORef ref >>= \case
+  InitialCorpusReplayComplete replayMs -> pure (True, Just replayMs)
+  InitialCorpusReplayIncomplete _ _ -> pure (False, Nothing)
 
 initialCorpusReplayComplete :: IORef InitialCorpusReplayState -> IO Bool
-initialCorpusReplayComplete ref = do
-  state <- readIORef ref
-  pure $ case state of
-    InitialCorpusReplayComplete -> True
-    InitialCorpusReplayIncomplete _ -> False
+initialCorpusReplayComplete ref = fst <$> initialCorpusReplayStatus ref
 
 data Env = Env
   { cfg :: EConfig
   , dapp :: DappInfo
   , sourceCache :: SourceCache
+  , compileMs :: Maybe Int
 
   -- | Whether stdout supports ANSI escape codes. Detected once at startup;
   -- false when output is redirected to a file or pipe so traces can be

@@ -24,6 +24,7 @@ import Data.Text.Lazy qualified as TL
 import Data.Time.Clock.System (getSystemTime, systemSeconds)
 import Data.Version (showVersion)
 import Data.Word (Word8, Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import Main.Utf8 (withUtf8)
 import Options.Applicative
 import Paths_echidna (version)
@@ -84,11 +85,15 @@ main = withUtf8 $ withCP65001 $ withStrippedExceptions $ do
   unless cfg.solConf.quiet $
     forM_ ks $ hPutStrLn stderr . ("Warning: unused option: " ++) . Aeson.Key.toString
 
+  compileStartedAt <- getMonotonicTimeNSec
   buildOutput <- compileContracts cfg.solConf cliFilePath
+  compileFinishedAt <- getMonotonicTimeNSec
+  let totalCompileMs = fromIntegral $ (compileFinishedAt - compileStartedAt) `div` 1_000_000
 
   -- take the seed from config, otherwise generate a new one
   seed <- maybe (getRandomR (0, maxBound)) pure cfg.campaignConf.seed
-  (vm, env, dict) <- prepareContract cfg cliFilePath buildOutput cliSelectedContract seed
+  (vm, baseEnv, dict) <- prepareContract cfg cliFilePath buildOutput cliSelectedContract seed
+  let env = baseEnv { compileMs = Just totalCompileMs }
 
   initialCorpus <- loadInitialCorpus env
   -- start ui and run tests
