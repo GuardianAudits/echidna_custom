@@ -54,7 +54,7 @@ import Echidna.MCP
   )
 import Echidna.Types.Config
   ( MCPConf(..), defaultMCPConf, InitialCorpusReplayState(..)
-  , initialCorpusReplayComplete, markInitialCorpusReplayWorkerComplete
+  , initialCorpusReplayComplete, initialCorpusReplayStatus, markInitialCorpusReplayWorkerComplete
   , resetInitialCorpusReplayState
   )
 import Echidna.Types.Campaign (initialWorkerState)
@@ -237,12 +237,15 @@ streamableStatusTests :: TestTree
 streamableStatusTests = testGroup "streamable status"
   [ testCase "keeps counters coherent when failures are visible before worker callback" $ do
       let now = read "2026-06-06 00:00:00 UTC" :: UTCTime
-          payload = streamableStatusSnapshot now now [initialWorkerState] 15 15 233468 4 2
+          payload = streamableStatusSnapshot now now [initialWorkerState] 15 15 233468 4 2 (Just 1234) True (Just 567)
       objectInt ["runs"] payload @?= Just 15
       objectInt ["counters", "totalCalls"] payload @?= Just 15
       objectInt ["counters", "successCalls"] payload @?= Just 0
       objectInt ["counters", "failedCalls"] payload @?= Just 15
       objectInt ["coveragePoints"] payload @?= Just 233468
+      objectInt ["compileMs"] payload @?= Just 1234
+      objectBool ["corpusReplayComplete"] payload @?= Just True
+      objectInt ["corpusReplayMs"] payload @?= Just 567
   ]
 
 streamableReliabilityTests :: TestTree
@@ -395,13 +398,15 @@ streamableReliabilityTests = testGroup "streamable MCP reliability"
       resourcePayload <- streamableResourcesRead (String "resource") undefined [] st (Just coverageResourceParams)
       objectArrayText ["result", "contents"] 0 ["text"] resourcePayload @?= Just "{\"ready\":true}"
   , testCase "corpus replay state resets for a new run" $ do
-      replayRef <- newIORef InitialCorpusReplayComplete
+      replayRef <- newIORef (InitialCorpusReplayComplete 0)
       resetInitialCorpusReplayState replayRef 2
       initialCorpusReplayComplete replayRef >>= (@?= False)
       markInitialCorpusReplayWorkerComplete replayRef
       initialCorpusReplayComplete replayRef >>= (@?= False)
       markInitialCorpusReplayWorkerComplete replayRef
       initialCorpusReplayComplete replayRef >>= (@?= True)
+      initialCorpusReplayStatus replayRef >>= \(_, replayMs) ->
+        assertBool "replay duration recorded" (maybe False (>= 0) replayMs)
       resetInitialCorpusReplayState replayRef 1
       initialCorpusReplayComplete replayRef >>= (@?= False)
       markInitialCorpusReplayWorkerComplete replayRef
@@ -525,7 +530,7 @@ mkStreamableState maxEvents = do
   eventsRef <- newIORef (StreamableEventBuffer 0 [])
   coverageRef <- newIORef StreamableCoverageNotComputed
   reproducerCacheRef <- newIORef Map.empty
-  initialCorpusReplayRef <- newIORef InitialCorpusReplayComplete
+  initialCorpusReplayRef <- newIORef (InitialCorpusReplayComplete 0)
   let started = read "2026-06-06 00:00:00 UTC" :: UTCTime
   pure $ StreamableMCPState eventsRef started maxEvents 65536 coverageRef reproducerCacheRef initialCorpusReplayRef Nothing
 

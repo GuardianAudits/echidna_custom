@@ -53,7 +53,7 @@ import Echidna.Output.Corpus (loadTxs)
 
 import Echidna.Types.Config
   ( Env(..), EConfig(..), InitialCorpusReplayState, MCPConf(..)
-  , initialCorpusReplayComplete
+  , initialCorpusReplayComplete, initialCorpusReplayStatus
   )
 import Echidna.Types.World (World(..))
 import Echidna.Types.Campaign
@@ -972,13 +972,14 @@ streamableStatus env workerRefs st = do
   tests <- mapM readIORef env.testRefs
   corpus <- readIORef env.corpusRef
   (points, codehashes) <- coverageStats env.coverageRefInit env.coverageRefRuntime
+  (replayComplete, replayMs) <- initialCorpusReplayStatus env.initialCorpusReplayRef
   now <- getCurrentTime
   let failedTests = length $ filter didFail tests
       corpusSize = Set.size corpus
-  pure $ streamableStatusSnapshot st.streamableStartedAt now workers failedTests (length tests) points codehashes corpusSize
+  pure $ streamableStatusSnapshot st.streamableStartedAt now workers failedTests (length tests) points codehashes corpusSize env.compileMs replayComplete replayMs
 
-streamableStatusSnapshot :: UTCTime -> UTCTime -> [WorkerState] -> Int -> Int -> Int -> Int -> Int -> Value
-streamableStatusSnapshot startedAt now workers failedTests totalTests points codehashes corpusSize =
+streamableStatusSnapshot :: UTCTime -> UTCTime -> [WorkerState] -> Int -> Int -> Int -> Int -> Int -> Maybe Int -> Bool -> Maybe Int -> Value
+streamableStatusSnapshot startedAt now workers failedTests totalTests points codehashes corpusSize compileMs replayComplete replayMs =
   let rawRuns = sum $ map (.ncalls) workers
       runs = max rawRuns failedTests
       successCalls = max 0 (runs - failedTests)
@@ -999,6 +1000,9 @@ streamableStatusSnapshot startedAt now workers failedTests totalTests points cod
         , "failed" .= failedTests
         ]
     , "corpus" .= object ["size" .= corpusSize]
+    , "compileMs" .= compileMs
+    , "corpusReplayComplete" .= replayComplete
+    , "corpusReplayMs" .= replayMs
     , "elapsedMs" .= (max 0 elapsedMs :: Int)
     ]
 
