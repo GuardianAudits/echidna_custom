@@ -38,6 +38,7 @@ jobs:
             name: macOS (x86_64)
             tuple: x86_64-macos
             system: x86_64-darwin
+            timeout: 180
           - os: macos-14
             name: macOS (aarch64)
             tuple: aarch64-macos
