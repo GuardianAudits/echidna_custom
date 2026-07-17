@@ -96,6 +96,23 @@ Echidna can test contracts compiled with different smart contract build systems,
 
 On top of that, Echidna supports two modes of testing complex contracts. Firstly, one can [take advantage of existing network state](https://secure-contracts.com/program-analysis/echidna/advanced/state-network-forking.html) and use that as the base state for Echidna. Secondly, Echidna can call into any contract with a known ABI by passing in the corresponding Solidity source in the CLI. Use `allContracts: true` in your config to turn this on.
 
+### Storage-aware RVM cheatcodes
+
+Import `Rvm.sol` and use the global `rvm` constant to resolve current storage by its solc layout:
+
+```solidity
+import "recon-fuzzer/Rvm.sol";
+
+uint256 total = uint256(rvm.loadVar(address(vault), "totalDeposits"));
+uint128 fee = uint128(uint256(rvm.loadVar(address(vault), "config.feeNumerator")));
+uint256 balance = uint256(rvm.loadVar(address(vault), "balances", abi.encode(user)));
+uint256 item = uint256(rvm.loadVar(address(vault), "items", abi.encode(index)));
+```
+
+Echidna builds and loads Foundry `storageLayout` artifacts automatically, so contracts deployed by the harness with `new` need no registration. For proxies, forked addresses, or other external contracts, use `assignStorageLayout`, `registerStorageLayout`, or `registerNamespace` from [`Rvm.sol`](Rvm.sol).
+
+`loadVar` reads one resolved storage value at the time of the call. An array key selects one element; `bytes` and `string` return their raw header slot. It does not read EVM memory or retain historical state, so a property that compares pre-call and post-call values must still save its pre-call value.
+
 ### Crash course on Echidna
 
 Our [Building Secure Smart Contracts](https://github.com/crytic/building-secure-contracts/tree/master/program-analysis/echidna#echidna-tutorial) repository contains a crash course on Echidna, including examples, lessons and exercises.

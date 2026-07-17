@@ -11,9 +11,10 @@ import Control.Monad.ST (ST, stToIO, RealWorld)
 import Control.Monad.State.Strict (MonadState(get, put), execState, runStateT, MonadIO(liftIO), gets, modify', execStateT)
 import Data.Bits
 import Data.ByteString qualified as BS
+import Data.Foldable (foldlM)
 import Data.IORef (readIORef, newIORef, writeIORef, modifyIORef')
 import Data.Map qualified as Map
-import Data.Maybe (fromMaybe, fromJust)
+import Data.Maybe (fromMaybe, fromJust, mapMaybe)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Vector.Unboxed.Mutable qualified as VMut
@@ -30,11 +31,14 @@ import EVM.Exec (exec, vmForEthrunCreation)
 import EVM.Fetch qualified
 import EVM.Format (hexText, showTraceTree)
 import EVM.GetCode qualified as GetCode
+import EVM.Solidity (SolcContract(..))
 import EVM.Types hiding (Env, Gas)
 
 import Echidna.Events (emptyEvents)
 import Echidna.Onchain (safeFetchContractFrom, safeFetchSlotFrom)
+import Echidna.RVM qualified as RVM
 import Echidna.SourceMapping (lookupUsingCodehashOrInsert)
+import Echidna.SourceMapping (findSrcForReal)
 import Echidna.SymExec.Symbolic (forceBuf)
 import Echidna.Transaction
 import Echidna.Types (ExecException(..), fromEVM, emptyAccount)
@@ -178,6 +182,13 @@ execTxWith executeTx tx = do
         fromEVM (continuation res)
         runFully -- resume execution
 
+      Just (PleaseResolveStorage addr path keys refs continuation) -> do
+        env <- ask
+        vm <- get
+        let resolved = resolveRvmStorage env vm addr path keys refs
+        fromEVM (continuation resolved)
+        runFully -- resume execution
+
       -- No queries to answer, the tx is fully executed and the result is final
       _ -> pure vmResult
 
@@ -216,6 +227,81 @@ execTxWith executeTx tx = do
     _ -> pure ()
 
   rpcUrls config = maybe [] (: config.fallbackRpcUrls) config.rpcUrl
+
+resolveRvmStorage
+  :: Env
+  -> VM Concrete
+  -> Addr
+  -> T.Text
+  -> BS.ByteString
+  -> [RvmLayoutRef]
+  -> Either T.Text RvmResolvedSlot
+resolveRvmStorage env vm addr path keys refs = case refs of
+  [] -> automaticLayout >>= resolveLayout
+  _ -> do
+    explicitLayout <- foldlM mergeRef Nothing refs >>= \case
+      Nothing -> Left "RVM has no registered storage layout"
+      Just combined -> Right combined
+    case resolveLayout explicitLayout of
+      Right resolved -> Right resolved
+      Left explicitError
+        | all isNamespaceRef refs -> case automaticLayout >>= resolveLayout of
+            Right resolved -> Right resolved
+            Left _ -> Left explicitError
+        | otherwise -> Left explicitError
+  where
+    firstRvmError = either (Left . T.pack . show) Right
+
+    resolveLayout layout = do
+      RVM.ResolvedSlot slot offset size <-
+        firstRvmError $ RVM.resolveStoragePath layout path keys
+      pure $ RvmResolvedSlot slot offset size
+
+    isNamespaceRef = \case
+      RvmNamespace _ _ -> True
+      RvmNamespaceAt _ _ -> True
+      _ -> False
+
+    automaticLayout = do
+      contract <- maybe
+        (Left $ "RVM target address is not deployed in this VM: " <> T.pack (show addr))
+        Right
+        (Map.lookup (LitAddr addr) vm.env.contracts)
+      solcContract <- maybe
+        (Left $ "RVM could not match target bytecode to a compiled contract: " <> T.pack (show addr))
+        Right
+        (findSrcForReal env.dapp contract)
+      lookupNamedLayout solcContract.contractName
+
+    mergeRef accumulated ref = do
+      next <- layoutFromRef ref
+      case accumulated of
+        Nothing -> Right (Just next)
+        Just current -> Just <$> firstRvmError (RVM.mergeStorageLayouts current next)
+
+    layoutFromRef = \case
+      RvmInline raw -> firstRvmError $ RVM.parseStorageLayout raw
+      RvmContract contractName -> lookupNamedLayout contractName
+      RvmNamespace namespace raw ->
+        firstRvmError $ RVM.parseStorageLayout raw >>= RVM.applyNamespace namespace
+      RvmNamespaceAt baseSlot raw ->
+        firstRvmError $ RVM.parseStorageLayout raw >>= RVM.applyNamespaceAt baseSlot
+
+    lookupNamedLayout contractName =
+      case mapMaybe (`Map.lookup` env.rvmStorageLayouts) (layoutNameCandidates contractName) of
+        layout : _ -> Right layout
+        [] -> Left $ "RVM storage layout not found for contract `" <> contractName
+          <> "`; build Foundry artifacts with storageLayout or register the layout explicitly"
+
+layoutNameCandidates :: T.Text -> [T.Text]
+layoutNameCandidates name =
+  let afterColon = last (T.splitOn ":" name)
+      afterSlash = last (T.splitOn "/" afterColon)
+      withoutSol = fromMaybe afterSlash (T.stripSuffix ".sol" afterSlash)
+  in distinct [name, afterColon, afterSlash, withoutSol]
+  where
+    distinct = foldr (\candidate seen ->
+      if candidate `elem` seen then seen else candidate : seen) []
 
 logMsg :: (MonadIO m, MonadReader Env m) => String -> m ()
 logMsg msg = do

@@ -4,6 +4,7 @@ import Control.Concurrent.STM (TChan)
 import Data.Aeson (FromJSON(..), withText)
 import Data.Aeson.Key (Key)
 import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
+import Data.Map.Strict (Map)
 import Data.Set (Set)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -16,6 +17,7 @@ import EVM.Solidity (SourceCache)
 import EVM.Types (Addr, W256)
 
 import Echidna.SourceAnalysis.Slither (SlitherInfo)
+import Echidna.RVM (StorageLayout)
 import Echidna.SourceMapping (CodehashMap)
 import Echidna.Types.Cache
 import Echidna.Types.Campaign (CampaignConf)
@@ -157,6 +159,7 @@ data Env = Env
   { cfg :: EConfig
   , dapp :: DappInfo
   , sourceCache :: SourceCache
+  , rvmStorageLayouts :: Map Text StorageLayout
 
   -- | Whether stdout supports ANSI escape codes. Detected once at startup;
   -- false when output is redirected to a file or pipe so traces can be

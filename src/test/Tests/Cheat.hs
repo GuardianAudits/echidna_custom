@@ -31,4 +31,12 @@ cheatTests =
     , testContract' "cheat/invalidUtf8String.sol" (Just "TestInvalidUtf8String") (Just (> solcV (0,8,0))) (Just "cheat/invalidUtf8String.yaml") False FuzzWorker
         [ ("echidna_invalid_utf8_cheatcode_string_is_escaped failed", passed "echidna_invalid_utf8_cheatcode_string_is_escaped")
         ]
+    , testContract' "cheat/rvm.sol" (Just "TestRvm") (Just (>= solcV (0,8,0))) (Just "cheat/rvm.yaml") False FuzzWorker
+        [ ("named RVM reads failed", passed "echidna_rvm_reads_named_packed_mapping_and_array")
+        , ("raw packed RVM reads failed", passed "echidna_rvm_reads_raw_packed_fields")
+        , ("RVM writes failed", passed "echidna_rvm_writes_preserve_adjacent_packed_fields")
+        , ("solc JSON layout registration failed", passed "echidna_rvm_accepts_solc_json_layout")
+        , ("RVM resolution errors escaped as fatal VM failures", passed "echidna_rvm_resolution_errors_revert_only_the_call")
+        , ("RVM writes were not rolled back on revert", passed "echidna_rvm_store_is_rolled_back_on_revert")
+        ]
     ]

@@ -26,6 +26,7 @@ import EVM.Types hiding (Env)
 import Echidna.ABI
 import Echidna.Onchain as Onchain
 import Echidna.Output.Corpus
+import Echidna.RVM.Artifacts (loadFoundryStorageLayouts)
 import Echidna.Solidity
 import Echidna.SourceAnalysis.Slither
 import Echidna.SourceMapping (findSrcForReal)
@@ -76,7 +77,7 @@ prepareContract cfg solFiles buildOutput selectedContract seed = do
 
   let world = mkWorld cfg.solConf signatureMap selectedContract slitherInfo contracts
 
-  env <- mkEnv cfg buildOutput tests world (Just slitherInfo)
+  env <- mkEnvAt (NE.head solFiles) cfg buildOutput tests world (Just slitherInfo)
 
   -- deploy contracts
   vm <- loadSpecified env mainContract contracts
@@ -121,7 +122,10 @@ instance ReadConfig IO where
   readConfig = pure defaultConfig
 
 mkEnv :: EConfig -> BuildOutput -> [EchidnaTest] -> World -> Maybe SlitherInfo -> IO Env
-mkEnv cfg buildOutput tests world slitherInfo = do
+mkEnv = mkEnvAt "."
+
+mkEnvAt :: FilePath -> EConfig -> BuildOutput -> [EchidnaTest] -> World -> Maybe SlitherInfo -> IO Env
+mkEnvAt rvmLayoutStart cfg buildOutput tests world slitherInfo = do
   codehashMap <- newIORef mempty
   chainId <- Onchain.fetchChainIdFrom (maybe [] (: cfg.fallbackRpcUrls) cfg.rpcUrl)
   eventQueue <- newBroadcastTChanIO
@@ -134,10 +138,15 @@ mkEnv cfg buildOutput tests world slitherInfo = do
   fetchSession <- EVM.Fetch.mkSession cfg.campaignConf.corpusDir (fromIntegral <$> cfg.rpcBlock)
   contractNameCache <- newIORef mempty
   useColor <- hNowSupportsANSI stdout
+  rvmStorageLayouts <- loadFoundryStorageLayouts rvmLayoutStart >>= \case
+    Left err -> do
+      hPutStrLn stderr $ "Warning: RVM automatic storage layouts are unavailable: " <> T.unpack err
+      pure Map.empty
+    Right layouts -> pure layouts
   -- TODO put in real path
   let dapp = dappInfo "/" buildOutput
       sourceCache = buildOutput.sources
-  pure $ Env { cfg, dapp, sourceCache, codehashMap, fetchSession, contractNameCache
+  pure $ Env { cfg, dapp, sourceCache, rvmStorageLayouts, codehashMap, fetchSession, contractNameCache
              , chainId, eventQueue, bus, coverageRefInit, coverageRefRuntime, corpusRef, initialCorpusReplayRef, testRefs, world
              , slitherInfo, useColor
              }

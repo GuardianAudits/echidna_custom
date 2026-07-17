@@ -1,0 +1,4 @@
+testLimit: 1
+seqLen: 1
+testMode: property
+disableSlither: true

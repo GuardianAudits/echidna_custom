@@ -15,6 +15,7 @@ import Tests.Onchain (onchainTests)
 import Tests.Optimization (optimizationTests)
 import Tests.Overflow (overflowTests)
 import Tests.Research (researchTests)
+import Tests.RVM (rvmTests)
 import Tests.Sample (sampleTests)
 import Tests.Seed (seedTests)
 import Tests.Symbolic (symbolicTests)
@@ -34,6 +35,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , overflowTests
            , optimizationTests
            , researchTests
+           , rvmTests
            , foundryTests
            , encodingJSONTests
            , onchainTests
