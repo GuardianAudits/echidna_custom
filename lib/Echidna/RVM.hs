@@ -583,7 +583,7 @@ resolveStoragePath
   -> ByteString
   -> Either RVMError ResolvedSlot
 resolveStoragePath layout rawPath keys = do
-  when (not $ BS.null keys || BS.length keys `mod` 32 == 0) $
+  when (BS.length keys `mod` 32 /= 0) $
     Left $ InvalidABIKeys
       ("ABI key payload length is " <> T.pack (show $ BS.length keys)
         <> " bytes; expected a multiple of 32")
