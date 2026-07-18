@@ -59,17 +59,83 @@ contract RvmNamespaceFallbackTarget {
   }
 }
 
+library RvmMercuryMiniState {
+  uint256 internal constant META_SLOT =
+    83520123052203421323616060186514871269683613528955258068140286938372383342787;
+
+  struct Meta {
+    address poolManager;
+    address protocolFeeRecipient;
+    uint128 defaultProtocolFeePct;
+    uint128 defaultLiquidityFeePct;
+    address wrapped;
+    bool protocolPaused;
+    uint64 originationFee;
+    uint64 timeToDistribute;
+    uint64 timeToAdapt;
+  }
+
+  function meta() internal pure returns (Meta storage meta_) {
+    uint256 slot = META_SLOT;
+    assembly {
+      meta_.slot := slot
+    }
+  }
+}
+
+contract RvmMercuryMiniComponent {
+  function seedMeta() external {
+    RvmMercuryMiniState.Meta storage meta = RvmMercuryMiniState.meta();
+    meta.poolManager = address(0x1000);
+    meta.protocolFeeRecipient = address(0x2000);
+    meta.defaultProtocolFeePct = 33;
+    meta.defaultLiquidityFeePct = 44;
+    meta.wrapped = address(0x3000);
+    meta.protocolPaused = true;
+    meta.originationFee = 55;
+    meta.timeToDistribute = 66;
+    meta.timeToAdapt = 77;
+  }
+
+  function readProtocolPaused() external view returns (bool) {
+    return RvmMercuryMiniState.meta().protocolPaused;
+  }
+}
+
+contract RvmMercuryMiniRelay {
+  address public implementation;
+
+  constructor(address implementation_) {
+    implementation = implementation_;
+  }
+
+  fallback() external payable {
+    (bool success, bytes memory resp) = implementation.delegatecall(msg.data);
+    assembly {
+      if eq(success, 0) { revert(add(resp, 0x20), returndatasize()) }
+      return(add(resp, 0x20), mload(resp))
+    }
+  }
+}
+
 contract TestRvm {
   address constant USER = address(0xBEEF);
   address constant SPENDER = address(0xCAFE);
+  string constant MERCURY_META_PATH =
+    "ns_83520123052203421323616060186514871269683613528955258068140286938372383342787.protocolPaused";
   RvmTarget target;
   RvmNamespaceTarget namespaceTarget;
   RvmNamespaceFallbackTarget namespaceFallbackTarget;
+  RvmMercuryMiniRelay mercuryMiniRelay;
 
   constructor() {
     target = new RvmTarget(USER, SPENDER);
     namespaceTarget = new RvmNamespaceTarget();
     namespaceFallbackTarget = new RvmNamespaceFallbackTarget();
+    RvmMercuryMiniComponent mercuryMiniComponent = new RvmMercuryMiniComponent();
+    mercuryMiniRelay = new RvmMercuryMiniRelay(address(mercuryMiniComponent));
+    (bool seeded,) = address(mercuryMiniRelay).call(abi.encodeWithSignature("seedMeta()"));
+    require(seeded, "seedMeta delegatecall failed");
     rvm.registerStorageLayout(
       address(target),
       "uint8 tiny, bool enabled, uint128 counter, uint256 totalDeposits, "
@@ -77,6 +143,17 @@ contract TestRvm {
       "mapping(address => uint256) balances, "
       "mapping(address => mapping(address => uint256)) allowances, uint256[] values"
       ", uint8[40] fixedPackedValues"
+    );
+    rvm.registerNamespace(
+      address(mercuryMiniRelay),
+      RvmMercuryMiniState.META_SLOT,
+      "address poolManager, address protocolFeeRecipient, uint128 defaultProtocolFeePct, "
+      "uint128 defaultLiquidityFeePct, address wrapped, bool protocolPaused, "
+      "uint64 originationFee, uint64 timeToDistribute, uint64 timeToAdapt, "
+      "mapping(address => bool) approvedReserves, mapping(address => address) deployer, "
+      "mapping(address => (bool active, bool approvedCreditDeployer, bool pauser, "
+      "uint64 protocolFeePct, uint64 liquidityFeePct)) deployerProfiles, "
+      "mapping(bytes32 => address) poolToBToken"
     );
   }
 
@@ -141,6 +218,38 @@ contract TestRvm {
       )
     );
     return !succeeded;
+  }
+
+  function echidna_rvm_reads_mercury_delegatecall_namespaced_packed_bool() public returns (bool) {
+    (bool succeeded, bytes memory ret) =
+      address(mercuryMiniRelay).staticcall(abi.encodeWithSignature("readProtocolPaused()"));
+    return succeeded
+      && abi.decode(ret, (bool))
+      && keccak256(bytes(_mercuryMetaPath("protocolPaused"))) == keccak256(bytes(MERCURY_META_PATH))
+      && uint256(rvm.loadVar(address(mercuryMiniRelay), _mercuryMetaPath("protocolPaused"))) == 1;
+  }
+
+  function _mercuryMetaPath(string memory path) internal pure returns (string memory) {
+    return string(abi.encodePacked("ns_", _toString(RvmMercuryMiniState.META_SLOT), ".", path));
+  }
+
+  function _toString(uint256 value) internal pure returns (string memory str) {
+    assembly {
+      let newFreeMemoryPointer := add(mload(0x40), 160)
+      mstore(0x40, newFreeMemoryPointer)
+      str := sub(newFreeMemoryPointer, 32)
+      mstore(str, 0)
+      let end := str
+      for { let temp := value } 1 {} {
+        str := sub(str, 1)
+        mstore8(str, add(48, mod(temp, 10)))
+        temp := div(temp, 10)
+        if iszero(temp) { break }
+      }
+      let length := sub(end, str)
+      str := sub(str, 32)
+      mstore(str, length)
+    }
   }
 
   function echidna_rvm_rejects_bad_layout_registration_immediately() public returns (bool) {
