@@ -57,10 +57,11 @@ import Echidna.RVM (StorageLayout, parseStorageLayoutValue)
 data StorageLayoutIndex = StorageLayoutIndex
   { layoutsByName :: Map Text StorageLayout
   , layoutsByRuntimeCodehash :: Map W256 StorageLayout
+  , layoutsByRuntimeCodehashAndName :: Map (W256, Text) StorageLayout
   } deriving (Eq, Show)
 
 emptyStorageLayoutIndex :: StorageLayoutIndex
-emptyStorageLayoutIndex = StorageLayoutIndex Map.empty Map.empty
+emptyStorageLayoutIndex = StorageLayoutIndex Map.empty Map.empty Map.empty
 
 -- | Find the closest Foundry project containing the supplied path. The path may
 -- name either a directory or a source file. A path outside a Foundry project is
@@ -138,7 +139,9 @@ loadFoundryStorageLayoutsUnchecked start = findFoundryProjectRoot start >>= \cas
 
 storageLayoutIndexNull :: StorageLayoutIndex -> Bool
 storageLayoutIndexNull index =
-  Map.null index.layoutsByName && Map.null index.layoutsByRuntimeCodehash
+  Map.null index.layoutsByName
+  && Map.null index.layoutsByRuntimeCodehash
+  && Map.null index.layoutsByRuntimeCodehashAndName
 
 loadConfiguredOutputArtifacts
   :: FilePath
@@ -235,35 +238,53 @@ loadStorageLayoutsFromArtifactsUnchecked artifactDirectory = do
         Right value -> case parseArtifactStorageLayout path value of
           Left err -> Left err
           Right Nothing -> Right indexed
-          Right (Just (names, runtimeCodehash, layout)) -> Right $
-            insertRuntimeLayout runtimeCodehash layout $
+          Right (Just (names, runtimeCodehashes, layout)) -> Right $
+            insertRuntimeNamedLayouts runtimeCodehashes names layout $
+            insertRuntimeLayouts runtimeCodehashes layout $
               foldl' (insertLayout layout) indexed names
 
     insertLayout layout indexed name =
       indexed { indexedByName = insertIndexedLayout name layout indexed.indexedByName }
 
-    insertRuntimeLayout Nothing _ indexed = indexed
-    insertRuntimeLayout (Just runtimeCodehash) layout indexed =
+    insertRuntimeLayouts [] _ indexed = indexed
+    insertRuntimeLayouts runtimeCodehashes layout indexed =
       indexed
         { indexedByRuntimeCodehash =
-            insertIndexedLayout runtimeCodehash layout indexed.indexedByRuntimeCodehash
+            foldl'
+              (\layouts runtimeCodehash -> insertIndexedLayout runtimeCodehash layout layouts)
+              indexed.indexedByRuntimeCodehash
+              runtimeCodehashes
+        }
+
+    insertRuntimeNamedLayouts [] _ _ indexed = indexed
+    insertRuntimeNamedLayouts runtimeCodehashes names layout indexed =
+      indexed
+        { indexedByRuntimeCodehashAndName =
+            foldl'
+              (\layouts key -> insertIndexedLayout key layout layouts)
+              indexed.indexedByRuntimeCodehashAndName
+              [(runtimeCodehash, name) | runtimeCodehash <- runtimeCodehashes, name <- names]
         }
 
 type LayoutIndex = Map Text (Maybe StorageLayout)
 type RuntimeLayoutIndex = Map W256 (Maybe StorageLayout)
+type RuntimeNamedLayoutIndex = Map (W256, Text) (Maybe StorageLayout)
 
 data IndexedLayouts = IndexedLayouts
   { indexedByName :: LayoutIndex
   , indexedByRuntimeCodehash :: RuntimeLayoutIndex
+  , indexedByRuntimeCodehashAndName :: RuntimeNamedLayoutIndex
   }
 
 emptyIndexedLayouts :: IndexedLayouts
-emptyIndexedLayouts = IndexedLayouts Map.empty Map.empty
+emptyIndexedLayouts = IndexedLayouts Map.empty Map.empty Map.empty
 
 finalizeLayoutIndex :: IndexedLayouts -> StorageLayoutIndex
 finalizeLayoutIndex indexed = StorageLayoutIndex
   { layoutsByName = Map.mapMaybe id indexed.indexedByName
   , layoutsByRuntimeCodehash = Map.mapMaybe id indexed.indexedByRuntimeCodehash
+  , layoutsByRuntimeCodehashAndName =
+      Map.mapMaybe id indexed.indexedByRuntimeCodehashAndName
   }
 
 -- Keep an alias only while every artifact that claims it has the same layout.
@@ -280,17 +301,33 @@ insertIndexedLayout name layout = Map.alter update name
 
 addProjectRootAliases :: FilePath -> StorageLayoutIndex -> StorageLayoutIndex
 addProjectRootAliases projectRoot index =
-  index { layoutsByName = Map.mapMaybe id $ foldl' addAlias initial (Map.toList index.layoutsByName) }
+  index
+    { layoutsByName =
+        Map.mapMaybe id $ foldl' addNameAlias initialNames (Map.toList index.layoutsByName)
+    , layoutsByRuntimeCodehashAndName =
+        Map.mapMaybe id $
+          foldl' addRuntimeNameAlias initialRuntimeNames
+            (Map.toList index.layoutsByRuntimeCodehashAndName)
+    }
   where
-    initial = Just <$> index.layoutsByName
-    addAlias names (name, layout) = case splitQualifiedName name of
+    initialNames = Just <$> index.layoutsByName
+    initialRuntimeNames = Just <$> index.layoutsByRuntimeCodehashAndName
+
+    addNameAlias names (name, layout) = case absoluteQualifiedAlias name of
       Nothing -> names
-      Just (source, contractName) ->
-        let absoluteSource = if isAbsolute (T.unpack source)
-              then normalise (T.unpack source)
-              else normalise (projectRoot </> T.unpack source)
-            absoluteName = T.pack absoluteSource <> ":" <> contractName
-        in insertIndexedLayout absoluteName layout names
+      Just alias -> insertIndexedLayout alias layout names
+
+    addRuntimeNameAlias layouts ((runtimeCodehash, name), layout) =
+      case absoluteQualifiedAlias name of
+        Nothing -> layouts
+        Just alias -> insertIndexedLayout (runtimeCodehash, alias) layout layouts
+
+    absoluteQualifiedAlias name = do
+      (source, contractName) <- splitQualifiedName name
+      let absoluteSource = if isAbsolute (T.unpack source)
+            then normalise (T.unpack source)
+            else normalise (projectRoot </> T.unpack source)
+      pure $ T.pack absoluteSource <> ":" <> contractName
 
 splitQualifiedName :: Text -> Maybe (Text, Text)
 splitQualifiedName name = do
@@ -331,7 +368,7 @@ collectArtifactFiles = walk
 parseArtifactStorageLayout
   :: FilePath
   -> Value
-  -> Either Text (Maybe ([Text], Maybe W256, StorageLayout))
+  -> Either Text (Maybe ([Text], [W256], StorageLayout))
 parseArtifactStorageLayout path artifact@(Object object) =
   case KeyMap.lookup "storageLayout" object of
     Nothing -> Right Nothing
@@ -342,20 +379,23 @@ parseArtifactStorageLayout path artifact@(Object object) =
           Left err -> Left $
             "Unable to parse storageLayout in " <> T.pack path <> ": " <> T.pack (show err)
           Right layout -> do
-            runtimeCodehash <- artifactRuntimeCodehash path object
-            Right . Just $ (artifactContractNames path artifact layoutValue, runtimeCodehash, layout)
+            runtimeCodehashes <- artifactRuntimeCodehashes path object
+            Right . Just $ (artifactContractNames path artifact layoutValue, runtimeCodehashes, layout)
 parseArtifactStorageLayout _ _ = Right Nothing
 
-artifactRuntimeCodehash :: FilePath -> KeyMap.KeyMap Value -> Either Text (Maybe W256)
-artifactRuntimeCodehash path artifact = case KeyMap.lookup "deployedBytecode" artifact of
-  Nothing -> Right Nothing
+artifactRuntimeCodehashes :: FilePath -> KeyMap.KeyMap Value -> Either Text [W256]
+artifactRuntimeCodehashes path artifact = case KeyMap.lookup "deployedBytecode" artifact of
+  Nothing -> Right []
   Just (Object deployedBytecode) -> case KeyMap.lookup "object" deployedBytecode of
     Just (String rawBytecode)
-      | T.null (strip0x rawBytecode) -> Right Nothing
+      | T.null (strip0x rawBytecode) -> Right []
       | otherwise -> do
           runtimeCode <- decodeHexBytecode path rawBytecode
-          Right . Just . keccak' $ stripBytecodeMetadata runtimeCode
-    _ -> Right Nothing
+          Right . nub $
+            [ keccak' runtimeCode
+            , keccak' (stripBytecodeMetadata runtimeCode)
+            ]
+    _ -> Right []
   Just _ -> Left $ "Invalid deployedBytecode in " <> T.pack path
 
 decodeHexBytecode :: FilePath -> Text -> Either Text BS.ByteString

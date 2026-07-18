@@ -8,10 +8,12 @@ import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Numeric (showHex)
 import System.Directory (createDirectory, getTemporaryDirectory, removePathForcibly)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
+import EVM.Solidity (stripBytecodeMetadata)
 import EVM.Types (W256, keccak', word256Bytes)
 
 import Echidna.RVM
@@ -150,6 +152,26 @@ rvmTests = testGroup "RVM storage layouts"
         index <- expectRight =<< loadStorageLayoutsFromArtifacts dir
         Map.lookup (keccak' $ BS.pack [0x60, 0x01]) index.layoutsByRuntimeCodehash
           @?= Nothing
+  , testCase "artifact runtime-codehash indexing uses exact metadata-bearing bytecode" $ do
+      withTempArtifactDirectory $ \dir -> do
+        let firstRuntime = metadataRuntime 0xba
+            secondRuntime = metadataRuntime 0xc8
+            strippedHash = keccak' (stripBytecodeMetadata firstRuntime)
+        writeFile (dir </> "First.json") $
+          artifactJson "First" (hexByteString firstRuntime) solcLayout
+        writeFile (dir </> "Second.json") $
+          artifactJson "Second" (hexByteString secondRuntime) oneSlotLayout
+        index <- expectRight =<< loadStorageLayoutsFromArtifacts dir
+        Map.member (keccak' firstRuntime) index.layoutsByRuntimeCodehash
+          @?= True
+        Map.member (keccak' secondRuntime) index.layoutsByRuntimeCodehash
+          @?= True
+        Map.lookup strippedHash index.layoutsByRuntimeCodehash
+          @?= Nothing
+        Map.member (strippedHash, "src/First.sol:First") index.layoutsByRuntimeCodehashAndName
+          @?= True
+        Map.member (strippedHash, "src/Second.sol:Second") index.layoutsByRuntimeCodehashAndName
+          @?= True
   ]
 
 expectRight :: (Show error) => Either error value -> IO value
@@ -200,6 +222,21 @@ artifactJson contractName runtimeHex layout =
     <> contractName <> ".sol\":\"" <> contractName <> "\"}}},"
     <> "\"ast\":{\"absolutePath\":\"/tmp/src/" <> contractName <> ".sol\"},"
     <> "\"storageLayout\":" <> layout <> "}"
+
+metadataRuntime :: Word -> ByteString
+metadataRuntime digestByte = BS.pack $
+  [0x60, 0x80, 0x60, 0x40, 0x52, 0x5f, 0x80, 0xfd, 0xfe]
+  <> [0xa2, 0x64, 0x69, 0x70, 0x66, 0x73, 0x58, 0x22, 0x12, 0x20]
+  <> replicate 32 (fromIntegral digestByte)
+  <> [0x64, 0x73, 0x6f, 0x6c, 0x63, 0x43, 0x00, 0x08, 0x19, 0x00, 0x33]
+
+hexByteString :: ByteString -> Text
+hexByteString bytes =
+  T.pack . ("0x" <>) . concatMap renderByte $ BS.unpack bytes
+  where
+    renderByte byte =
+      let hex = showHex byte ""
+      in if length hex == 1 then '0' : hex else hex
 
 solcLayout :: Text
 solcLayout =
