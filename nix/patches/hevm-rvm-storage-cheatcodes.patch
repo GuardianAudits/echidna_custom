@@ -144,7 +144,7 @@ index 4b8f5612..13401c83 100644
    , action "sign(uint256,bytes32)" $
        \sig input -> case decodeStaticArgs 0 2 input of
          [sk, hash] ->
-@@ -2393,6 +2502,120 @@ cheatActions = Map.fromList
+@@ -2393,6 +2502,121 @@ cheatActions = Map.fromList
            | member x seen = go seen xs
            | otherwise = x : go (insert x seen) xs
  
@@ -159,12 +159,13 @@ index 4b8f5612..13401c83 100644
 +      -> ByteString
 +      -> (RvmResolvedSlot -> EVM t ())
 +      -> EVM t ()
-+    resolveRvmSlot _sig target path keys continueResolved = do
-+      refs <- fromMaybe mempty <$> use (#config % #rvmLayoutRefs % at target)
-+      query $ PleaseResolveStorage target path keys refs $ \case
-+        Left err -> continueOnce $
-+          frameRevert (BS8.pack $ "RVM storage resolution failed: " <> unpack err)
-+        Right resolved -> continueOnce (continueResolved resolved)
++    resolveRvmSlot _sig target path keys continueResolved =
++      fetchAccount (LitAddr target) $ \_ -> do
++        refs <- fromMaybe mempty <$> use (#config % #rvmLayoutRefs % at target)
++        query $ PleaseResolveStorage target path keys refs $ \case
++          Left err -> continueOnce $
++            frameRevert (BS8.pack $ "RVM storage resolution failed: " <> unpack err)
++          Right resolved -> continueOnce (continueResolved resolved)
 +
 +    validateRvmLayoutRefs
 +      :: (?conf :: Config, VMOps t, Typeable t)
@@ -265,7 +266,7 @@ index 4b8f5612..13401c83 100644
      dealErc20 sig tokenW toW giveW adjustW =
        whenSymbolicElse
          (vmError (BadCheatCode "deal(address,address,uint256[,bool]) not supported in symbolic mode" sig))
-@@ -2515,7 +2699,9 @@ cheatActions = Map.fromList
+@@ -2515,7 +2700,9 @@ cheatActions = Map.fromList
                , txdataFloorGas = vm.tx.txdataFloorGas
                }
          nested0' <- lift $ makeVm opts
@@ -276,7 +277,7 @@ index 4b8f5612..13401c83 100644
          nested1 <- lift $ execStateT (assign (#state % #static) True) nested0
          runNestedVM nested1 $ \nestedF -> do
            let
-@@ -2582,6 +2768,16 @@ cheatActions = Map.fromList
+@@ -2582,6 +2769,16 @@ cheatActions = Map.fromList
            assign #result Nothing
            nested' <- lift $ execStateT (k val) nested
            runNestedVM nested' cont
@@ -293,37 +294,37 @@ index 4b8f5612..13401c83 100644
      either' v l r = either l r v
      frameReturn :: VMOps t => AbiValue -> EVM t ()
      frameReturn v = frameReturnBuf $ encodeAbiValue v
-@@ -2834,5 +3020,6 @@ call xGasAllowance xTo xValue xInOffset xInSize xOutOffset xOutSize xs = do
+@@ -2834,5 +3021,6 @@ call xGasAllowance xTo xValue xInOffset xInSize xOutOffset xOutSize xs = do
                              , codehash  = target.codehash
                              , callreversion = vm0.env.contracts
 +                            , rvmLayoutRefsReversion = vm0.config.rvmLayoutRefs
                              , subState  = vm0.tx.subState
                              , abi
                              , calldata
-@@ -2942,5 +3129,6 @@ create self this xSize xGas xValue xs newAddr initCode = do
+@@ -2942,5 +3130,6 @@ create self this xSize xGas xValue xs newAddr initCode = do
                  CreationContext { address   = newAddr
                                  , codehash  = newContract.codehash
                                  , createreversion = vm0.env.contracts
 +                                , rvmLayoutRefsReversion = vm0.config.rvmLayoutRefs
                                  , subState  = vm0.tx.subState
                                  }
-@@ -3207,2 +3395,2 @@ finishFrameNoExpectation how = do
+@@ -3207,2 +3396,2 @@ finishFrameNoExpectation how = do
          -- Were we calling?
 -        CallContext _ _ outOffset outSize _ _ _ reversion subState' -> do
 +        CallContext _ _ outOffset outSize _ _ _ reversion rvmLayoutRefsReversion subState' -> do
-@@ -3222,3 +3410,4 @@ finishFrameNoExpectation how = do
+@@ -3222,3 +3411,4 @@ finishFrameNoExpectation how = do
              subState'' = over #touchedAccounts (maybe id cons (find (LitAddr 3 ==) touched)) subState'
              revertContracts = assign (#env % #contracts) reversion
 +            revertRvmLayoutRefs = assign (#config % #rvmLayoutRefs) rvmLayoutRefsReversion
              revertSubstate  = assign (#tx % #subState) subState''
-@@ -3237,5 +3426,6 @@ finishFrameNoExpectation how = do
+@@ -3237,5 +3427,6 @@ finishFrameNoExpectation how = do
              FrameReverted output -> do
                revertContracts
 +              revertRvmLayoutRefs
                revertSubstate
                assign (#state % #returndata) output
                copyCallBytesToMemory output outSize outOffset
-@@ -3247,10 +3437,11 @@ finishFrameNoExpectation how = do
+@@ -3247,10 +3438,11 @@ finishFrameNoExpectation how = do
              FrameErrored _ -> do
                revertContracts
 +              revertRvmLayoutRefs
@@ -336,18 +337,18 @@ index 4b8f5612..13401c83 100644
            creator <- use (#state % #contract)
            let
              createe = oldVm.state.contract
-@@ -3261,2 +3452,3 @@ finishFrameNoExpectation how = do
+@@ -3261,2 +3453,3 @@ finishFrameNoExpectation how = do
              -- persist the nonce through the reversion
 +            revertRvmLayoutRefs = assign (#config % #rvmLayoutRefs) rvmLayoutRefsReversion
              reversion' = (Map.adjust (over #nonce (fmap ((+) 1))) creator) reversion
-@@ -3286,5 +3478,6 @@ finishFrameNoExpectation how = do
+@@ -3286,5 +3479,6 @@ finishFrameNoExpectation how = do
              FrameReverted output -> do
                revertContracts
 +              revertRvmLayoutRefs
                revertSubstate
                assign (#state % #returndata) output
                reclaimRemainingGasAllowance oldVm
-@@ -3295,5 +3488,6 @@ finishFrameNoExpectation how = do
+@@ -3295,5 +3489,6 @@ finishFrameNoExpectation how = do
              FrameErrored _ -> do
                revertContracts
 +              revertRvmLayoutRefs
