@@ -9,6 +9,9 @@ interface Rvm {
   function storeVar(address, string calldata, bytes calldata, bytes32) external;
   function storeVar(address, bytes32, uint8, uint8, bytes32) external;
   function registerStorageLayout(address, string calldata) external;
+  function assignStorageLayout(address, string calldata) external;
+  function registerNamespace(address, string calldata, string calldata) external;
+  function registerNamespace(address, uint256, string calldata) external;
 }
 
 Rvm constant rvm = Rvm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);
@@ -36,13 +39,37 @@ contract RvmTarget {
   }
 }
 
+contract RvmNamespaceTarget {
+  constructor() {
+    assembly {
+      sstore(123456789, 1)
+    }
+  }
+}
+
+contract RvmNamespaceFallbackTarget {
+  struct Namespace {
+    uint16[3] protocolPaused;
+  }
+
+  Namespace private ns_123456789;
+
+  constructor() {
+    ns_123456789.protocolPaused[2] = 0xBEEF;
+  }
+}
+
 contract TestRvm {
   address constant USER = address(0xBEEF);
   address constant SPENDER = address(0xCAFE);
   RvmTarget target;
+  RvmNamespaceTarget namespaceTarget;
+  RvmNamespaceFallbackTarget namespaceFallbackTarget;
 
   constructor() {
     target = new RvmTarget(USER, SPENDER);
+    namespaceTarget = new RvmNamespaceTarget();
+    namespaceFallbackTarget = new RvmNamespaceFallbackTarget();
     rvm.registerStorageLayout(
       address(target),
       "uint8 tiny, bool enabled, uint128 counter, uint256 totalDeposits, "
@@ -91,6 +118,49 @@ contract TestRvm {
     return uint256(rvm.loadVar(address(target), "totalDeposits")) == 777;
   }
 
+  function echidna_rvm_register_namespace_base_slot_loads_decimal_path() public returns (bool) {
+    rvm.registerNamespace(address(namespaceTarget), 123456789, "bool protocolPaused");
+    return uint256(rvm.loadVar(address(namespaceTarget), "ns_123456789.protocolPaused")) == 1;
+  }
+
+  function echidna_rvm_namespace_registration_upserts_and_preserves_namespaces() public returns (bool) {
+    rvm.registerNamespace(address(namespaceTarget), 123456789, "bool protocolPaused");
+    rvm.registerNamespace(address(namespaceTarget), 123456789, "bool protocolPaused");
+    rvm.registerStorageLayout(address(namespaceTarget), "uint256 dummy");
+    return uint256(rvm.loadVar(address(namespaceTarget), "ns_123456789.protocolPaused")) == 1;
+  }
+
+  function echidna_rvm_namespace_errors_do_not_fallback_to_automatic_layout() public returns (bool) {
+    rvm.registerNamespace(address(namespaceFallbackTarget), 123456789, "uint16[1] protocolPaused");
+    (bool succeeded,) = address(rvm).call(
+      abi.encodeWithSignature(
+        "loadVar(address,string,bytes)",
+        address(namespaceFallbackTarget),
+        "ns_123456789.protocolPaused",
+        abi.encode(uint256(2))
+      )
+    );
+    return !succeeded;
+  }
+
+  function echidna_rvm_rejects_bad_layout_registration_immediately() public returns (bool) {
+    (bool invalidCompactSucceeded,) = address(rvm).call(
+      abi.encodeWithSignature(
+        "registerStorageLayout(address,string)",
+        address(namespaceTarget),
+        "uint256"
+      )
+    );
+    (bool missingContractSucceeded,) = address(rvm).call(
+      abi.encodeWithSignature(
+        "assignStorageLayout(address,string)",
+        address(namespaceTarget),
+        "DefinitelyMissingRvmLayout"
+      )
+    );
+    return !invalidCompactSucceeded && !missingContractSucceeded;
+  }
+
   function echidna_rvm_resolution_errors_revert_only_the_call() public returns (bool) {
     (bool missingSucceeded,) = address(rvm).call(
       abi.encodeWithSignature("loadVar(address,string)", address(target), "missing")
@@ -100,7 +170,12 @@ contract TestRvm {
         "loadVar(address,string,bytes)", address(target), "fixedPackedValues", abi.encode(uint256(40))
       )
     );
-    return !missingSucceeded && !outOfBoundsSucceeded;
+    (bool dynamicOutOfBoundsSucceeded,) = address(rvm).call(
+      abi.encodeWithSignature(
+        "loadVar(address,string,bytes)", address(target), "values", abi.encode(uint256(1))
+      )
+    );
+    return !missingSucceeded && !outOfBoundsSucceeded && !dynamicOutOfBoundsSucceeded;
   }
 
   function rvm_write_then_revert() external {

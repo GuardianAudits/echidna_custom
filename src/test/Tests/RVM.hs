@@ -2,6 +2,7 @@ module Tests.RVM (rvmTests) where
 
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.String (fromString)
 import Data.Text (Text)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -32,6 +33,10 @@ rvmTests = testGroup "RVM storage layouts"
       let start = keccak' (word256Bytes 0)
       resolveStoragePath layout "values" (abiWords [33])
         @?= Right (ResolvedSlot (start + 1) 1 1)
+  , testCase "dynamic arrays reject out-of-bounds indexes when length is available" $ do
+      layout <- expectRight $ parseCompactLayout "uint256[] values"
+      resolveStoragePathWithLengths readLength layout "values" (abiWords [2])
+        @?= Left (ArrayIndexOutOfBounds "uint256[]" 2 2)
   , testCase "nested mappings consume ABI words left to right" $ do
       layout <- expectRight $ parseCompactLayout
         "mapping(address => mapping(uint256 => (uint128 amount, bool live))) positions"
@@ -72,6 +77,11 @@ rvmTests = testGroup "RVM storage layouts"
         @?= Right (ResolvedSlot baseSlot 0 32)
       resolveStoragePath namespaced "example.main.owner" BS.empty
         @?= Right (ResolvedSlot (baseSlot + 1) 0 20)
+  , testCase "base-slot namespaces use decimal ns labels" $ do
+      layout <- expectRight $ parseCompactLayout "bool protocolPaused"
+      namespaced <- expectRight $ applyNamespaceAt 123456789 layout
+      resolveStoragePath namespaced "ns_123456789.protocolPaused" BS.empty
+        @?= Right (ResolvedSlot 123456789 0 1)
   , testCase "layout merge rejects ambiguous duplicate variables" $ do
       left <- expectRight $ parseCompactLayout "uint256 value"
       right <- expectRight $ parseCompactLayout "address value"
@@ -114,6 +124,13 @@ abiString bytes =
     <> BS.replicate padding 0
   where
     padding = (32 - BS.length bytes `mod` 32) `mod` 32
+
+readLength :: W256 -> Either RVMError W256
+readLength 0 = Right 2
+readLength slot = Left $ ArrayLengthUnavailable ("unexpected length slot " <> showText slot)
+
+showText :: Show a => a -> Text
+showText = fromString . show
 
 solcLayout :: Text
 solcLayout =

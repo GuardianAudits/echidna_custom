@@ -4,7 +4,7 @@
 
 module Echidna.Exec where
 
-import Control.Monad (when, forM_)
+import Control.Monad (void, when, forM_)
 import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.Reader (MonadReader, ask, asks)
 import Control.Monad.ST (ST, stToIO, RealWorld)
@@ -28,6 +28,7 @@ import EVM.ABI
 import EVM.Dapp (DappInfo)
 import EVM.Effects (defaultConfig)
 import EVM.Exec (exec, vmForEthrunCreation)
+import EVM.Expr qualified as Expr
 import EVM.Fetch qualified
 import EVM.Format (hexText, showTraceTree)
 import EVM.GetCode qualified as GetCode
@@ -189,6 +190,12 @@ execTxWith executeTx tx = do
         fromEVM (continuation resolved)
         runFully -- resume execution
 
+      Just (PleaseValidateStorageLayout refs continuation) -> do
+        env <- ask
+        let validated = validateRvmLayoutRefs env refs
+        fromEVM (continuation validated)
+        runFully -- resume execution
+
       -- No queries to answer, the tx is fully executed and the result is final
       _ -> pure vmResult
 
@@ -228,6 +235,31 @@ execTxWith executeTx tx = do
 
   rpcUrls config = maybe [] (: config.fallbackRpcUrls) config.rpcUrl
 
+data RvmResolveError
+  = RvmLayoutError RVM.RVMError
+  | RvmLookupError T.Text
+  deriving (Eq, Show)
+
+renderRvmResolveResult :: Either RvmResolveError a -> Either T.Text a
+renderRvmResolveResult = either (Left . renderResolveError) Right
+  where
+    renderResolveError = \case
+      RvmLayoutError err -> T.pack (show err)
+      RvmLookupError err -> err
+
+firstRvmError :: Either RVM.RVMError a -> Either RvmResolveError a
+firstRvmError = either (Left . RvmLayoutError) Right
+
+validateRvmLayoutRefs :: Env -> [RvmLayoutRef] -> Either T.Text ()
+validateRvmLayoutRefs env refs =
+  renderRvmResolveResult $ void $ foldlM mergeRef Nothing refs
+  where
+    mergeRef accumulated ref = do
+      next <- rvmLayoutFromRef env ref
+      case accumulated of
+        Nothing -> Right (Just next)
+        Just current -> Just <$> firstRvmError (RVM.mergeStorageLayouts current next)
+
 resolveRvmStorage
   :: Env
   -> VM Concrete
@@ -237,25 +269,38 @@ resolveRvmStorage
   -> [RvmLayoutRef]
   -> Either T.Text RvmResolvedSlot
 resolveRvmStorage env vm addr path keys refs = case refs of
-  [] -> automaticLayout >>= resolveLayout
-  _ -> do
+  [] -> renderRvmResolveResult $ automaticLayout >>= resolveLayout
+  _ -> renderRvmResolveResult $ do
     explicitLayout <- foldlM mergeRef Nothing refs >>= \case
-      Nothing -> Left "RVM has no registered storage layout"
+      Nothing -> Left $ RvmLookupError "RVM has no registered storage layout"
       Just combined -> Right combined
     case resolveLayout explicitLayout of
       Right resolved -> Right resolved
       Left explicitError
-        | all isNamespaceRef refs -> case automaticLayout >>= resolveLayout of
-            Right resolved -> Right resolved
-            Left _ -> Left explicitError
+        | all isNamespaceRef refs && allowsNamespaceFallback explicitError ->
+            case automaticLayout >>= resolveLayout of
+              Right resolved -> Right resolved
+              Left _ -> Left explicitError
         | otherwise -> Left explicitError
   where
-    firstRvmError = either (Left . T.pack . show) Right
+    allowsNamespaceFallback = \case
+      RvmLayoutError (RVM.VariableNotFound _) -> True
+      _ -> False
 
     resolveLayout layout = do
       RVM.ResolvedSlot slot offset size <-
-        firstRvmError $ RVM.resolveStoragePath layout path keys
+        firstRvmError $ RVM.resolveStoragePathWithLengths rvmReadStorageWord layout path keys
       pure $ RvmResolvedSlot slot offset size
+
+    rvmReadStorageWord slot =
+      case Map.lookup (LitAddr addr) vm.env.contracts of
+        Nothing -> Left $ RVM.ArrayLengthUnavailable $
+          "dynamic array length slot " <> T.pack (show slot) <> " is unavailable because the target is not deployed"
+        Just contract ->
+          case Expr.readStorage' (Lit slot) contract.storage of
+            Lit value -> Right value
+            _ -> Left $ RVM.ArrayLengthUnavailable $
+              "dynamic array length slot " <> T.pack (show slot) <> " is not concrete"
 
     isNamespaceRef = \case
       RvmNamespace _ _ -> True
@@ -264,34 +309,39 @@ resolveRvmStorage env vm addr path keys refs = case refs of
 
     automaticLayout = do
       contract <- maybe
-        (Left $ "RVM target address is not deployed in this VM: " <> T.pack (show addr))
+        (Left $ RvmLookupError $
+          "RVM target address is not deployed in this VM: " <> T.pack (show addr))
         Right
         (Map.lookup (LitAddr addr) vm.env.contracts)
       solcContract <- maybe
-        (Left $ "RVM could not match target bytecode to a compiled contract: " <> T.pack (show addr))
+        (Left $ RvmLookupError $
+          "RVM could not match target bytecode to a compiled contract: " <> T.pack (show addr))
         Right
         (findSrcForReal env.dapp contract)
-      lookupNamedLayout solcContract.contractName
+      lookupRvmNamedLayout env solcContract.contractName
 
     mergeRef accumulated ref = do
-      next <- layoutFromRef ref
+      next <- rvmLayoutFromRef env ref
       case accumulated of
         Nothing -> Right (Just next)
         Just current -> Just <$> firstRvmError (RVM.mergeStorageLayouts current next)
 
-    layoutFromRef = \case
-      RvmInline raw -> firstRvmError $ RVM.parseStorageLayout raw
-      RvmContract contractName -> lookupNamedLayout contractName
-      RvmNamespace namespace raw ->
-        firstRvmError $ RVM.parseStorageLayout raw >>= RVM.applyNamespace namespace
-      RvmNamespaceAt baseSlot raw ->
-        firstRvmError $ RVM.parseStorageLayout raw >>= RVM.applyNamespaceAt baseSlot
+rvmLayoutFromRef :: Env -> RvmLayoutRef -> Either RvmResolveError RVM.StorageLayout
+rvmLayoutFromRef env = \case
+  RvmInline raw -> firstRvmError $ RVM.parseStorageLayout raw
+  RvmContract contractName -> lookupRvmNamedLayout env contractName
+  RvmNamespace namespace raw ->
+    firstRvmError $ RVM.parseStorageLayout raw >>= RVM.applyNamespace namespace
+  RvmNamespaceAt baseSlot raw ->
+    firstRvmError $ RVM.parseStorageLayout raw >>= RVM.applyNamespaceAt baseSlot
 
-    lookupNamedLayout contractName =
-      case mapMaybe (`Map.lookup` env.rvmStorageLayouts) (layoutNameCandidates contractName) of
-        layout : _ -> Right layout
-        [] -> Left $ "RVM storage layout not found for contract `" <> contractName
-          <> "`; build Foundry artifacts with storageLayout or register the layout explicitly"
+lookupRvmNamedLayout :: Env -> T.Text -> Either RvmResolveError RVM.StorageLayout
+lookupRvmNamedLayout env contractName =
+  case mapMaybe (`Map.lookup` env.rvmStorageLayouts) (layoutNameCandidates contractName) of
+    layout : _ -> Right layout
+    [] -> Left $ RvmLookupError $
+      "RVM storage layout not found for contract `" <> contractName
+        <> "`; build Foundry artifacts with storageLayout or register the layout explicitly"
 
 layoutNameCandidates :: T.Text -> [T.Text]
 layoutNameCandidates name =

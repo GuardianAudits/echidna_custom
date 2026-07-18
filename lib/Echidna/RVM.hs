@@ -8,6 +8,7 @@ module Echidna.RVM
   , parseStorageLayoutValue
   , parseCompactLayout
   , resolveStoragePath
+  , resolveStoragePathWithLengths
   , erc7201Slot
   , applyNamespace
   , applyNamespaceAt
@@ -582,13 +583,30 @@ resolveStoragePath
   -> Text
   -> ByteString
   -> Either RVMError ResolvedSlot
-resolveStoragePath layout rawPath keys = do
+resolveStoragePath = resolveStoragePathInternal Nothing
+
+resolveStoragePathWithLengths
+  :: (W256 -> Either RVMError W256)
+  -> StorageLayout
+  -> Text
+  -> ByteString
+  -> Either RVMError ResolvedSlot
+resolveStoragePathWithLengths readLength =
+  resolveStoragePathInternal (Just readLength)
+
+resolveStoragePathInternal
+  :: Maybe (W256 -> Either RVMError W256)
+  -> StorageLayout
+  -> Text
+  -> ByteString
+  -> Either RVMError ResolvedSlot
+resolveStoragePathInternal readLength layout rawPath keys = do
   when (BS.length keys `mod` 32 /= 0) $
     Left $ InvalidABIKeys
       ("ABI key payload length is " <> T.pack (show $ BS.length keys)
         <> " bytes; expected a multiple of 32")
   (entry, remainingPath) <- findTopLevelEntry layout.storage path
-  (resolved, cursor) <- resolveInner layout entry.slot entry.offset entry.typeId
+  (resolved, cursor) <- resolveInner readLength layout entry.slot entry.offset entry.typeId
     remainingPath keys (KeyCursor 0 [])
   validateConsumedKeys keys cursor
   pure resolved
@@ -616,7 +634,8 @@ findTopLevelEntry entries path
       ]
 
 resolveInner
-  :: StorageLayout
+  :: Maybe (W256 -> Either RVMError W256)
+  -> StorageLayout
   -> W256
   -> Int
   -> Text
@@ -624,7 +643,7 @@ resolveInner
   -> ByteString
   -> KeyCursor
   -> Either RVMError (ResolvedSlot, KeyCursor)
-resolveInner layout currentSlot currentOffset typeId remainingPath keys cursor = do
+resolveInner readLength layout currentSlot currentOffset typeId remainingPath keys cursor = do
   ty <- lookupType layout.types typeId
   case ty.encoding of
     "inplace"
@@ -651,7 +670,7 @@ resolveInner layout currentSlot currentOffset typeId remainingPath keys cursor =
           (Left $ MemberNotFound typeId memberName)
           Right
           (findEntry memberName typeMembers)
-        resolveInner layout (currentSlot + member.slot) member.offset member.typeId
+        resolveInner readLength layout (currentSlot + member.slot) member.offset member.typeId
           rest keys cursor
 
     resolveMapping ty = do
@@ -660,15 +679,21 @@ resolveInner layout currentSlot currentOffset typeId remainingPath keys cursor =
       keyType <- lookupType layout.types keyId
       (encodedKey, nextCursor) <- consumeMappingKey keyType keyId keys cursor
       let derivedSlot = keccak' (encodedKey <> word256Bytes currentSlot)
-      resolveInner layout derivedSlot 0 valueId remainingPath keys nextCursor
+      resolveInner readLength layout derivedSlot 0 valueId remainingPath keys nextCursor
 
     resolveDynamicArray ty = do
       baseId <- requireTypeReference typeId "base" ty.base
       baseTy <- lookupType layout.types baseId
       (index, nextCursor) <- consumeIndex ty.label keys cursor
+      case readLength of
+        Nothing -> pure ()
+        Just readLength' -> do
+          length' <- readLength' currentSlot
+          when (index >= length') $
+            Left $ ArrayIndexOutOfBounds ty.label index (toInteger length')
       let dataStart = keccak' (word256Bytes currentSlot)
           (elementSlot, elementOffset) = arrayElementLocation dataStart baseTy index
-      resolveInner layout elementSlot elementOffset baseId remainingPath keys nextCursor
+      resolveInner readLength layout elementSlot elementOffset baseId remainingPath keys nextCursor
 
     resolveFixedArray ty baseId = do
       baseTy <- lookupType layout.types baseId
@@ -677,7 +702,7 @@ resolveInner layout currentSlot currentOffset typeId remainingPath keys cursor =
       when (toInteger index >= length') $
         Left $ ArrayIndexOutOfBounds ty.label index length'
       let (elementSlot, elementOffset) = arrayElementLocation currentSlot baseTy index
-      resolveInner layout elementSlot elementOffset baseId remainingPath keys nextCursor
+      resolveInner readLength layout elementSlot elementOffset baseId remainingPath keys nextCursor
 
 findEntry :: Text -> [StorageEntry] -> Maybe StorageEntry
 findEntry name = go
@@ -851,7 +876,7 @@ applyNamespace namespace = namespaceStorageLayout namespace (erc7201Slot namespa
 
 applyNamespaceAt :: W256 -> StorageLayout -> Either RVMError StorageLayout
 applyNamespaceAt baseSlot =
-  namespaceStorageLayout ("ns_" <> T.pack (show baseSlot)) baseSlot
+  namespaceStorageLayout ("ns_" <> T.pack (show (toInteger baseSlot))) baseSlot
 
 -- | Wrap a relative layout in a synthetic struct rooted at the supplied slot.
 -- This retains dotted namespace labels without mutating nested type references.

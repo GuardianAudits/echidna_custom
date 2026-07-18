@@ -29,7 +29,7 @@ index 4b8f5612..13401c83 100644
        }
      , forks = Seq.singleton (ForkState env block mempty "")
      , currentFork = 0
-@@ -2144,6 +2146,113 @@ cheatActions = Map.fromList
+@@ -2144,6 +2146,109 @@ cheatActions = Map.fromList
            _ -> vmError (BadCheatCode "load(address,bytes32) issue, maybe the address provided is not correct?" sig)
          _ -> vmError (BadCheatCode "load(address,bytes32) parameter decoding failed" sig)
  
@@ -105,9 +105,8 @@ index 4b8f5612..13401c83 100644
 +        (CAbi [AbiAddress target, AbiString layoutBytes], "") ->
 +          case decodeUtf8' layoutBytes of
 +            Left _ -> rvmDecodeError sig "registerStorageLayout(address,string): layout is not valid UTF-8"
-+            Right layout -> do
-+              modifying (#config % #rvmLayoutRefs) (Map.insert target [RvmInline layout])
-+              doStop
++            Right layout ->
++              setRvmMainLayoutRef sig target (RvmInline layout)
 +        _ -> rvmDecodeError sig "registerStorageLayout(address,string) parameter decoding failed"
 +
 +  , action "assignStorageLayout(address,string)" $
@@ -115,18 +114,16 @@ index 4b8f5612..13401c83 100644
 +        (CAbi [AbiAddress target, AbiString contractBytes], "") ->
 +          case decodeUtf8' contractBytes of
 +            Left _ -> rvmDecodeError sig "assignStorageLayout(address,string): contract name is not valid UTF-8"
-+            Right contractName -> do
-+              modifying (#config % #rvmLayoutRefs) (Map.insert target [RvmContract contractName])
-+              doStop
++            Right contractName ->
++              setRvmMainLayoutRef sig target (RvmContract contractName)
 +        _ -> rvmDecodeError sig "assignStorageLayout(address,string) parameter decoding failed"
 +
 +  , action "registerNamespace(address,string,string)" $
 +      \sig input -> case decodeBuf [AbiAddressType, AbiStringType, AbiStringType] input of
 +        (CAbi [AbiAddress target, AbiString namespaceBytes, AbiString layoutBytes], "") ->
 +          case (decodeUtf8' namespaceBytes, decodeUtf8' layoutBytes) of
-+            (Right namespace, Right layout) -> do
-+              appendRvmLayoutRef target (RvmNamespace namespace layout)
-+              doStop
++            (Right namespace, Right layout) ->
++              upsertRvmLayoutRef sig target (RvmNamespace namespace layout)
 +            _ -> rvmDecodeError sig "registerNamespace(address,string,string): namespace or layout is not valid UTF-8"
 +        _ -> rvmDecodeError sig "registerNamespace(address,string,string) parameter decoding failed"
 +
@@ -134,16 +131,15 @@ index 4b8f5612..13401c83 100644
 +      \sig input -> case decodeBuf [AbiAddressType, AbiUIntType 256, AbiStringType] input of
 +        (CAbi [AbiAddress target, AbiUInt 256 baseSlot, AbiString layoutBytes], "") ->
 +          case decodeUtf8' layoutBytes of
-+            Right layout -> do
-+              appendRvmLayoutRef target (RvmNamespaceAt (into baseSlot) layout)
-+              doStop
++            Right layout ->
++              upsertRvmLayoutRef sig target (RvmNamespaceAt (into baseSlot) layout)
 +            Left _ -> rvmDecodeError sig "registerNamespace(address,uint256,string): layout is not valid UTF-8"
 +        _ -> rvmDecodeError sig "registerNamespace(address,uint256,string) parameter decoding failed"
 +
    , action "sign(uint256,bytes32)" $
        \sig input -> case decodeStaticArgs 0 2 input of
          [sk, hash] ->
-@@ -2393,6 +2502,81 @@ cheatActions = Map.fromList
+@@ -2393,6 +2502,120 @@ cheatActions = Map.fromList
            | member x seen = go seen xs
            | otherwise = x : go (insert x seen) xs
  
@@ -164,6 +160,18 @@ index 4b8f5612..13401c83 100644
 +        Left err -> continueOnce $
 +          frameRevert (BS8.pack $ "RVM storage resolution failed: " <> unpack err)
 +        Right resolved -> continueOnce (continueResolved resolved)
++
++    validateRvmLayoutRefs
++      :: (?conf :: Config, VMOps t, Typeable t)
++      => FunctionSelector
++      -> [RvmLayoutRef]
++      -> EVM t ()
++      -> EVM t ()
++    validateRvmLayoutRefs _sig refs continueRegistered =
++      query $ PleaseValidateStorageLayout refs $ \case
++        Left err -> continueOnce $
++          frameRevert (BS8.pack $ "RVM storage layout registration failed: " <> unpack err)
++        Right () -> continueOnce continueRegistered
 +
 +    rvmLoadResolved
 +      :: (?conf :: Config, VMOps t, Typeable t)
@@ -217,10 +225,37 @@ index 4b8f5612..13401c83 100644
 +            Expr.and newValue (Lit valueMask)
 +      in Expr.or cleared inserted
 +
-+    appendRvmLayoutRef :: Addr -> RvmLayoutRef -> EVM t ()
-+    appendRvmLayoutRef target ref =
-+      modifying (#config % #rvmLayoutRefs) $
-+        Map.alter (Just . maybe [ref] (<> [ref])) target
++    setRvmMainLayoutRef :: (?conf :: Config, VMOps t, Typeable t) => FunctionSelector -> Addr -> RvmLayoutRef -> EVM t ()
++    setRvmMainLayoutRef sig target ref = do
++      refs <- fromMaybe mempty <$> use (#config % #rvmLayoutRefs % at target)
++      let nextRefs = ref : filter isNamespaceRef refs
++      validateRvmLayoutRefs sig nextRefs $ do
++        modifying (#config % #rvmLayoutRefs) (Map.insert target nextRefs)
++        finishFrame (FrameReturned mempty)
++
++    upsertRvmLayoutRef :: (?conf :: Config, VMOps t, Typeable t) => FunctionSelector -> Addr -> RvmLayoutRef -> EVM t ()
++    upsertRvmLayoutRef sig target ref = do
++      refs <- fromMaybe mempty <$> use (#config % #rvmLayoutRefs % at target)
++      let nextRefs = filter (not . sameRvmLayoutDomain ref) refs <> [ref]
++      validateRvmLayoutRefs sig nextRefs $ do
++        modifying (#config % #rvmLayoutRefs) (Map.insert target nextRefs)
++        finishFrame (FrameReturned mempty)
++
++    isNamespaceRef :: RvmLayoutRef -> Bool
++    isNamespaceRef ref = case ref of
++      RvmNamespace _ _ -> True
++      RvmNamespaceAt _ _ -> True
++      _ -> False
++
++    sameRvmLayoutDomain :: RvmLayoutRef -> RvmLayoutRef -> Bool
++    sameRvmLayoutDomain new old = case (new, old) of
++      (RvmInline _, RvmInline _) -> True
++      (RvmInline _, RvmContract _) -> True
++      (RvmContract _, RvmInline _) -> True
++      (RvmContract _, RvmContract _) -> True
++      (RvmNamespace namespace _, RvmNamespace namespace' _) -> namespace == namespace'
++      (RvmNamespaceAt baseSlot _, RvmNamespaceAt baseSlot' _) -> baseSlot == baseSlot'
++      _ -> False
 +
      dealErc20 sig tokenW toW giveW adjustW =
        whenSymbolicElse
@@ -236,7 +271,7 @@ index 4b8f5612..13401c83 100644
          nested1 <- lift $ execStateT (assign (#state % #static) True) nested0
          runNestedVM nested1 $ \nestedF -> do
            let
-@@ -2582,6 +2768,11 @@ cheatActions = Map.fromList
+@@ -2582,6 +2768,16 @@ cheatActions = Map.fromList
            assign #result Nothing
            nested' <- lift $ execStateT (k val) nested
            runNestedVM nested' cont
@@ -245,6 +280,11 @@ index 4b8f5612..13401c83 100644
 +          assign #result Nothing
 +          nested' <- lift $ execStateT (k resolved) nested
 +          runNestedVM nested' cont
++      PleaseValidateStorageLayout refs k ->
++        query $ PleaseValidateStorageLayout refs $ \validated -> do
++          assign #result Nothing
++          nested' <- lift $ execStateT (k validated) nested
++          runNestedVM nested' cont
      either' v l r = either l r v
      frameReturn :: VMOps t => AbiValue -> EVM t ()
      frameReturn v = frameReturnBuf $ encodeAbiValue v
@@ -252,12 +292,15 @@ diff --git a/src/EVM/Fetch.hs b/src/EVM/Fetch.hs
 index 00175820..4783ad92 100644
 --- a/src/EVM/Fetch.hs
 +++ b/src/EVM/Fetch.hs
-@@ -716,6 +716,9 @@ oracle solvers preSess rpcInfo q = do
+@@ -716,6 +716,12 @@ oracle solvers preSess rpcInfo q = do
        res <- liftIO $ GetCode.getCodeFromEnv GetCode.PreferHevm artifactRef
        pure $ continue res
  
 +    PleaseResolveStorage _ _ _ _ continue ->
 +      pure $ continue $ Left "RVM storage layout resolution is unavailable in this HEVM host"
++
++    PleaseValidateStorageLayout _ continue ->
++      pure $ continue $ Left "RVM storage layout validation is unavailable in this HEVM host"
 +
      where
        -- special values such as 0, 0xdeadbeef, 0xacab, hevm cheatcodes, and the precompile addresses
@@ -293,16 +336,18 @@ index b8bc4ee0..06344327 100644
  data Query t where
    PleaseFetchContract :: Addr -> BaseState -> (Contract -> EVM t ()) -> Query t
    PleaseFetchSlot     :: Addr -> W256 -> (W256 -> EVM t ()) -> Query t
-@@ -615,6 +628,8 @@ data Query t where
+@@ -615,6 +628,10 @@ data Query t where
    PleaseDoFFI         :: [String] -> Map String String -> (ByteString -> EVM t ()) -> Query t
    PleaseReadEnv       :: String -> (String -> EVM t ()) -> Query t
    PleaseGetCode       :: FilePath -> (Either String ByteString -> EVM t ()) -> Query t
 +  PleaseResolveStorage :: Addr -> Text -> ByteString -> [RvmLayoutRef]
 +                       -> (Either Text RvmResolvedSlot -> EVM t ()) -> Query t
++  PleaseValidateStorageLayout :: [RvmLayoutRef]
++                              -> (Either Text () -> EVM t ()) -> Query t
  
  data BranchContext where
    PleaseRunBoth :: (Bool -> EVM Symbolic ()) -> BranchContext
-@@ -648,6 +663,11 @@ instance Show (Query t) where
+@@ -648,6 +663,14 @@ instance Show (Query t) where
        (("<EVM.Query: read env: " ++ variable) ++)
      PleaseGetCode path _ ->
        (("<EVM.Query: get code: " ++ path ++ ">") ++)
@@ -310,6 +355,9 @@ index b8bc4ee0..06344327 100644
 +      (("<EVM.Query: resolve RVM storage path "
 +        ++ show path ++ " for " ++ show addr
 +        ++ " with " ++ show (BS.length keys) ++ " key bytes and refs "
++        ++ show refs ++ ">") ++)
++    PleaseValidateStorageLayout refs _ ->
++      (("<EVM.Query: validate RVM storage layout refs "
 +        ++ show refs ++ ">") ++)
  
  instance Show (BranchContext) where

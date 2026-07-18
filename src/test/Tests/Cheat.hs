@@ -36,6 +36,10 @@ cheatTests =
         , ("raw packed RVM reads failed", passed "echidna_rvm_reads_raw_packed_fields")
         , ("RVM writes failed", passed "echidna_rvm_writes_preserve_adjacent_packed_fields")
         , ("solc JSON layout registration failed", passed "echidna_rvm_accepts_solc_json_layout")
+        , ("base-slot namespace RVM reads failed", passed "echidna_rvm_register_namespace_base_slot_loads_decimal_path")
+        , ("namespace RVM registrations were not idempotent", passed "echidna_rvm_namespace_registration_upserts_and_preserves_namespaces")
+        , ("namespace RVM errors fell back to automatic layouts", passed "echidna_rvm_namespace_errors_do_not_fallback_to_automatic_layout")
+        , ("bad RVM layout registrations did not revert immediately", passed "echidna_rvm_rejects_bad_layout_registration_immediately")
         , ("RVM resolution errors escaped as fatal VM failures", passed "echidna_rvm_resolution_errors_revert_only_the_call")
         , ("RVM writes were not rolled back on revert", passed "echidna_rvm_store_is_rolled_back_on_revert")
         ]
