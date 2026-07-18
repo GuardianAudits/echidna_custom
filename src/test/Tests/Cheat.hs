@@ -41,6 +41,7 @@ cheatTests =
         , ("namespace RVM errors fell back to automatic layouts", passed "echidna_rvm_namespace_errors_do_not_fallback_to_automatic_layout")
         , ("bad RVM layout registrations did not revert immediately", passed "echidna_rvm_rejects_bad_layout_registration_immediately")
         , ("RVM resolution errors escaped as fatal VM failures", passed "echidna_rvm_resolution_errors_revert_only_the_call")
+        , ("RVM layout registrations were not rolled back on revert", passed "echidna_rvm_layout_registration_is_rolled_back_on_revert")
         , ("RVM writes were not rolled back on revert", passed "echidna_rvm_store_is_rolled_back_on_revert")
         ]
     ]

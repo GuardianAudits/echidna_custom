@@ -178,6 +178,19 @@ contract TestRvm {
     return !missingSucceeded && !outOfBoundsSucceeded && !dynamicOutOfBoundsSucceeded;
   }
 
+  function rvm_register_layout_then_revert() external {
+    require(msg.sender == address(this));
+    rvm.registerStorageLayout(address(target), "uint256 wrongSlotZero");
+    revert("rollback RVM layout");
+  }
+
+  function echidna_rvm_layout_registration_is_rolled_back_on_revert() public returns (bool) {
+    (bool succeeded,) = address(this).call(
+      abi.encodeWithSelector(this.rvm_register_layout_then_revert.selector)
+    );
+    return !succeeded && uint256(rvm.loadVar(address(target), "totalDeposits")) == 777;
+  }
+
   function rvm_write_then_revert() external {
     require(msg.sender == address(this));
     rvm.storeVar(address(target), "config.paused", bytes32(uint256(0)));

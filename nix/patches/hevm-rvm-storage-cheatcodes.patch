@@ -29,6 +29,11 @@ index 4b8f5612..13401c83 100644
        }
      , forks = Seq.singleton (ForkState env block mempty "")
      , currentFork = 0
+@@ -1979,3 +1982,3 @@ cheat gas (inOffset, inSize) (outOffset, outSize) xs = do
+   calldata <- readMemory inOffset inSize
+   abi <- readBytes 4 (Lit 0) <$> readMemory inOffset (Lit 4)
+-  let newContext = CallContext cheatCode cheatCode outOffset outSize (Lit 0) (maybeLitWordSimp abi) calldata vm.env.contracts vm.tx.subState
++  let newContext = CallContext cheatCode cheatCode outOffset outSize (Lit 0) (maybeLitWordSimp abi) calldata vm.env.contracts vm.config.rvmLayoutRefs vm.tx.subState
 @@ -2144,6 +2146,109 @@ cheatActions = Map.fromList
            _ -> vmError (BadCheatCode "load(address,bytes32) issue, maybe the address provided is not correct?" sig)
          _ -> vmError (BadCheatCode "load(address,bytes32) parameter decoding failed" sig)
@@ -288,6 +293,67 @@ index 4b8f5612..13401c83 100644
      either' v l r = either l r v
      frameReturn :: VMOps t => AbiValue -> EVM t ()
      frameReturn v = frameReturnBuf $ encodeAbiValue v
+@@ -2834,5 +3020,6 @@ call xGasAllowance xTo xValue xInOffset xInSize xOutOffset xOutSize xs = do
+                             , codehash  = target.codehash
+                             , callreversion = vm0.env.contracts
++                            , rvmLayoutRefsReversion = vm0.config.rvmLayoutRefs
+                             , subState  = vm0.tx.subState
+                             , abi
+                             , calldata
+@@ -2942,5 +3129,6 @@ create self this xSize xGas xValue xs newAddr initCode = do
+                 CreationContext { address   = newAddr
+                                 , codehash  = newContract.codehash
+                                 , createreversion = vm0.env.contracts
++                                , rvmLayoutRefsReversion = vm0.config.rvmLayoutRefs
+                                 , subState  = vm0.tx.subState
+                                 }
+@@ -3207,2 +3395,2 @@ finishFrameNoExpectation how = do
+         -- Were we calling?
+-        CallContext _ _ outOffset outSize _ _ _ reversion subState' -> do
++        CallContext _ _ outOffset outSize _ _ _ reversion rvmLayoutRefsReversion subState' -> do
+@@ -3222,3 +3410,4 @@ finishFrameNoExpectation how = do
+             subState'' = over #touchedAccounts (maybe id cons (find (LitAddr 3 ==) touched)) subState'
+             revertContracts = assign (#env % #contracts) reversion
++            revertRvmLayoutRefs = assign (#config % #rvmLayoutRefs) rvmLayoutRefsReversion
+             revertSubstate  = assign (#tx % #subState) subState''
+@@ -3237,5 +3426,6 @@ finishFrameNoExpectation how = do
+             FrameReverted output -> do
+               revertContracts
++              revertRvmLayoutRefs
+               revertSubstate
+               assign (#state % #returndata) output
+               copyCallBytesToMemory output outSize outOffset
+@@ -3247,10 +3437,11 @@ finishFrameNoExpectation how = do
+             FrameErrored _ -> do
+               revertContracts
++              revertRvmLayoutRefs
+               revertSubstate
+               assign (#state % #returndata) mempty
+               push 0
+         -- Or were we creating?
+-        CreationContext _ _ reversion subState' -> do
++        CreationContext _ _ reversion rvmLayoutRefsReversion subState' -> do
+           creator <- use (#state % #contract)
+           let
+             createe = oldVm.state.contract
+@@ -3261,2 +3452,3 @@ finishFrameNoExpectation how = do
+             -- persist the nonce through the reversion
++            revertRvmLayoutRefs = assign (#config % #rvmLayoutRefs) rvmLayoutRefsReversion
+             reversion' = (Map.adjust (over #nonce (fmap ((+) 1))) creator) reversion
+@@ -3286,5 +3478,6 @@ finishFrameNoExpectation how = do
+             FrameReverted output -> do
+               revertContracts
++              revertRvmLayoutRefs
+               revertSubstate
+               assign (#state % #returndata) output
+               reclaimRemainingGasAllowance oldVm
+@@ -3295,5 +3488,6 @@ finishFrameNoExpectation how = do
+             FrameErrored _ -> do
+               revertContracts
++              revertRvmLayoutRefs
+               revertSubstate
+               assign (#state % #returndata) mempty
+               push 0
 diff --git a/src/EVM/Fetch.hs b/src/EVM/Fetch.hs
 index 00175820..4783ad92 100644
 --- a/src/EVM/Fetch.hs
@@ -370,3 +436,18 @@ index b8bc4ee0..06344327 100644
    }
    deriving (Show)
  
+@@ -789,6 +810,7 @@ data FrameContext
+     { address         :: Expr EAddr
+     , codehash        :: Expr EWord
+     , createreversion :: Map (Expr EAddr) Contract
++    , rvmLayoutRefsReversion :: Map Addr [RvmLayoutRef]
+     , subState        :: SubState
+     }
+   | CallContext
+@@ -802,5 +824,6 @@ data FrameContext
+     , abi           :: Maybe W256
+     , calldata      :: Expr Buf
+     , callreversion :: Map (Expr EAddr) Contract
++    , rvmLayoutRefsReversion :: Map Addr [RvmLayoutRef]
+     , subState      :: SubState
+     }
