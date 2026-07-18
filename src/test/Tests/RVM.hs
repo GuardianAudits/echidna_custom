@@ -1,15 +1,21 @@
 module Tests.RVM (rvmTests) where
 
+import Control.Exception (bracket)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.Map.Strict qualified as Map
 import Data.String (fromString)
 import Data.Text (Text)
+import Data.Text qualified as T
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import System.Directory (createDirectory, getTemporaryDirectory, removePathForcibly)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
 import EVM.Types (W256, keccak', word256Bytes)
 
 import Echidna.RVM
+import Echidna.RVM.Artifacts
 
 rvmTests :: TestTree
 rvmTests = testGroup "RVM storage layouts"
@@ -124,6 +130,26 @@ rvmTests = testGroup "RVM storage layouts"
       layout <- expectRight $ parseStorageLayout duplicateLabelLayout
       resolveStoragePath layout "stdstore" BS.empty
         @?= Left (AmbiguousVariable "stdstore" [1, 14])
+  , testCase "artifact layouts are indexed by runtime codehash" $ do
+      withTempArtifactDirectory $ \dir -> do
+        let artifactPath = dir </> "Target.json"
+            runtimeCode = BS.pack [0x60, 0x00]
+            expectedHash = keccak' runtimeCode
+        writeFile artifactPath (artifactJson "Target" "0x6000" solcLayout)
+        index <- expectRight =<< loadStorageLayoutsFromArtifacts dir
+        Map.member "Target" index.layoutsByName @?= True
+        case Map.lookup expectedHash index.layoutsByRuntimeCodehash of
+          Nothing -> fail "expected runtime-codehash layout"
+          Just layout ->
+            resolveStoragePath layout "config.fee" BS.empty
+              @?= Right (ResolvedSlot 7 16 16)
+  , testCase "artifact runtime-codehash collisions are not indexed" $ do
+      withTempArtifactDirectory $ \dir -> do
+        writeFile (dir </> "First.json") (artifactJson "First" "0x6001" solcLayout)
+        writeFile (dir </> "Second.json") (artifactJson "Second" "0x6001" oneSlotLayout)
+        index <- expectRight =<< loadStorageLayoutsFromArtifacts dir
+        Map.lookup (keccak' $ BS.pack [0x60, 0x01]) index.layoutsByRuntimeCodehash
+          @?= Nothing
   ]
 
 expectRight :: (Show error) => Either error value -> IO value
@@ -155,6 +181,26 @@ readLength slot = Left $ ArrayLengthUnavailable ("unexpected length slot " <> sh
 showText :: Show a => a -> Text
 showText = fromString . show
 
+withTempArtifactDirectory :: (FilePath -> IO a) -> IO a
+withTempArtifactDirectory action = do
+  parent <- getTemporaryDirectory
+  timestamp <- getPOSIXTime
+  let suffix = show (round (timestamp * 1000000) :: Integer)
+  let dir = parent </> ("echidna-rvm-artifact-test-" <> suffix)
+  bracket (createDirectory dir >> pure dir) removePathForcibly action
+
+(</>) :: FilePath -> FilePath -> FilePath
+parent </> child = parent <> "/" <> child
+
+artifactJson :: Text -> Text -> Text -> String
+artifactJson contractName runtimeHex layout =
+  T.unpack $
+    "{\"deployedBytecode\":{\"object\":\"" <> runtimeHex <> "\"},"
+    <> "\"metadata\":{\"settings\":{\"compilationTarget\":{\"src/"
+    <> contractName <> ".sol\":\"" <> contractName <> "\"}}},"
+    <> "\"ast\":{\"absolutePath\":\"/tmp/src/" <> contractName <> ".sol\"},"
+    <> "\"storageLayout\":" <> layout <> "}"
+
 solcLayout :: Text
 solcLayout =
   "{\"storage\":["
@@ -180,5 +226,11 @@ duplicateLabelLayout =
   "{\"storage\":["
   <> "{\"label\":\"stdstore\",\"offset\":0,\"slot\":\"1\",\"type\":\"t_uint256\"},"
   <> "{\"label\":\"stdstore\",\"offset\":0,\"slot\":\"14\",\"type\":\"t_uint256\"}],"
+  <> "\"types\":{\"t_uint256\":{\"encoding\":\"inplace\","
+  <> "\"label\":\"uint256\",\"numberOfBytes\":\"32\"}}}"
+
+oneSlotLayout :: Text
+oneSlotLayout =
+  "{\"storage\":[{\"label\":\"value\",\"offset\":0,\"slot\":\"0\",\"type\":\"t_uint256\"}],"
   <> "\"types\":{\"t_uint256\":{\"encoding\":\"inplace\","
   <> "\"label\":\"uint256\",\"numberOfBytes\":\"32\"}}}"

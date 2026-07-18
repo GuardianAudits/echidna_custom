@@ -38,6 +38,7 @@ import EVM.Types hiding (Env, Gas)
 import Echidna.Events (emptyEvents)
 import Echidna.Onchain (safeFetchContractFrom, safeFetchSlotFrom)
 import Echidna.RVM qualified as RVM
+import Echidna.RVM.Artifacts (StorageLayoutIndex(..))
 import Echidna.SourceMapping (lookupUsingCodehashOrInsert)
 import Echidna.SourceMapping (findSrcForReal)
 import Echidna.SymExec.Symbolic (forceBuf)
@@ -318,7 +319,7 @@ resolveRvmStorage env vm addr path keys refs = case refs of
           "RVM could not match target bytecode to a compiled contract: " <> T.pack (show addr))
         Right
         (findSrcForReal env.dapp contract)
-      lookupRvmNamedLayout env solcContract.contractName
+      lookupRvmRuntimeLayout env solcContract
 
     mergeRef accumulated ref = do
       next <- rvmLayoutFromRef env ref
@@ -337,11 +338,22 @@ rvmLayoutFromRef env = \case
 
 lookupRvmNamedLayout :: Env -> T.Text -> Either RvmResolveError RVM.StorageLayout
 lookupRvmNamedLayout env contractName =
-  case mapMaybe (`Map.lookup` env.rvmStorageLayouts) (layoutNameCandidates contractName) of
+  let StorageLayoutIndex byName _ = env.rvmStorageLayouts
+  in case mapMaybe (`Map.lookup` byName) (layoutNameCandidates contractName) of
     layout : _ -> Right layout
     [] -> Left $ RvmLookupError $
       "RVM storage layout not found for contract `" <> contractName
         <> "`; build Foundry artifacts with storageLayout or register the layout explicitly"
+
+lookupRvmRuntimeLayout :: Env -> SolcContract -> Either RvmResolveError RVM.StorageLayout
+lookupRvmRuntimeLayout env solcContract =
+  let StorageLayoutIndex _ byRuntimeCodehash = env.rvmStorageLayouts
+  in case Map.lookup solcContract.runtimeCodehash byRuntimeCodehash of
+    Just layout -> Right layout
+    Nothing -> Left $ RvmLookupError $
+      "RVM storage layout for `" <> solcContract.contractName <> "` is not bound to runtime codehash `"
+        <> T.pack (show solcContract.runtimeCodehash)
+        <> "`; rebuild Foundry artifacts with storageLayout or register the layout explicitly"
 
 layoutNameCandidates :: T.Text -> [T.Text]
 layoutNameCandidates name =

@@ -26,7 +26,7 @@ import EVM.Types hiding (Env)
 import Echidna.ABI
 import Echidna.Onchain as Onchain
 import Echidna.Output.Corpus
-import Echidna.RVM.Artifacts (loadFoundryStorageLayouts)
+import Echidna.RVM.Artifacts (emptyStorageLayoutIndex, loadFoundryStorageLayouts)
 import Echidna.Solidity
 import Echidna.SourceAnalysis.Slither
 import Echidna.SourceMapping (findSrcForReal)
@@ -141,7 +141,7 @@ mkEnvAt rvmLayoutStart cfg buildOutput tests world slitherInfo = do
   rvmStorageLayouts <- loadFoundryStorageLayouts rvmLayoutStart >>= \case
     Left err -> do
       hPutStrLn stderr $ "Warning: RVM automatic storage layouts are unavailable: " <> T.unpack err
-      pure Map.empty
+      pure emptyStorageLayoutIndex
     Right layouts -> pure layouts
   -- TODO put in real path
   let dapp = dappInfo "/" buildOutput

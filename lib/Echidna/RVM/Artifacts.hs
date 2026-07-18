@@ -1,5 +1,7 @@
 module Echidna.RVM.Artifacts
-  ( findFoundryProjectRoot
+  ( StorageLayoutIndex(..)
+  , emptyStorageLayoutIndex
+  , findFoundryProjectRoot
   , loadFoundryStorageLayouts
   , loadFoundryStorageLayoutsFromCurrentDirectory
   , loadStorageLayoutsFromArtifacts
@@ -13,6 +15,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bifunctor (first)
 import Data.ByteString qualified as BS
+import Data.ByteString.Base16 qualified as BS16
 import Data.Char (toLower)
 import Data.Foldable (toList)
 import Data.List (foldl', isSuffixOf, nub, sort)
@@ -46,7 +49,18 @@ import System.FilePath
   )
 import System.Process qualified as Process
 
+import EVM.Solidity (stripBytecodeMetadata)
+import EVM.Types (W256, keccak')
+
 import Echidna.RVM (StorageLayout, parseStorageLayoutValue)
+
+data StorageLayoutIndex = StorageLayoutIndex
+  { layoutsByName :: Map Text StorageLayout
+  , layoutsByRuntimeCodehash :: Map W256 StorageLayout
+  } deriving (Eq, Show)
+
+emptyStorageLayoutIndex :: StorageLayoutIndex
+emptyStorageLayoutIndex = StorageLayoutIndex Map.empty Map.empty
 
 -- | Find the closest Foundry project containing the supplied path. The path may
 -- name either a directory or a source file. A path outside a Foundry project is
@@ -75,14 +89,14 @@ findFoundryProjectRoot start = do
 -- and configuration failures are returned with command output for caller logs.
 loadFoundryStorageLayouts
   :: FilePath
-  -> IO (Either Text (Map Text StorageLayout))
+  -> IO (Either Text StorageLayoutIndex)
 loadFoundryStorageLayouts start = do
   result <- tryIO (loadFoundryStorageLayoutsUnchecked start)
   pure $ first (renderIOException "loading Foundry storage layouts" start) result >>= id
 
 -- | Convenience wrapper for callers whose project context is the process cwd.
 loadFoundryStorageLayoutsFromCurrentDirectory
-  :: IO (Either Text (Map Text StorageLayout))
+  :: IO (Either Text StorageLayoutIndex)
 loadFoundryStorageLayoutsFromCurrentDirectory =
   getCurrentDirectory >>= loadFoundryStorageLayouts
 
@@ -90,16 +104,16 @@ loadFoundryStorageLayoutsFromCurrentDirectory =
 -- Foundry. This is useful when another compiler step has just produced output.
 loadStorageLayoutsFromArtifacts
   :: FilePath
-  -> IO (Either Text (Map Text StorageLayout))
+  -> IO (Either Text StorageLayoutIndex)
 loadStorageLayoutsFromArtifacts artifactDirectory = do
   result <- tryIO (loadStorageLayoutsFromArtifactsUnchecked artifactDirectory)
   pure $ first (renderIOException "reading storage-layout artifacts" artifactDirectory) result >>= id
 
 loadFoundryStorageLayoutsUnchecked
   :: FilePath
-  -> IO (Either Text (Map Text StorageLayout))
+  -> IO (Either Text StorageLayoutIndex)
 loadFoundryStorageLayoutsUnchecked start = findFoundryProjectRoot start >>= \case
-  Nothing -> pure (Right Map.empty)
+  Nothing -> pure (Right emptyStorageLayoutIndex)
   Just projectRoot -> do
     forge <- findExecutable "forge"
     outputDirectoryResult <- case forge of
@@ -190,33 +204,57 @@ resolveFromProjectRoot projectRoot configuredPath
 
 loadStorageLayoutsFromArtifactsUnchecked
   :: FilePath
-  -> IO (Either Text (Map Text StorageLayout))
+  -> IO (Either Text StorageLayoutIndex)
 loadStorageLayoutsFromArtifactsUnchecked artifactDirectory = do
   files <- collectArtifactFiles artifactDirectory
-  indexed <- foldM loadOne (Right Map.empty) files
-  pure $ Map.mapMaybe id <$> indexed
+  indexed <- foldM loadOne (Right emptyIndexedLayouts) files
+  pure $ finalizeLayoutIndex <$> indexed
   where
     loadOne (Left err) _ = pure (Left err)
-    loadOne (Right layouts) path = do
+    loadOne (Right indexed) path = do
       bytes <- BS.readFile path
       pure $ case eitherDecodeStrict' bytes of
         -- The output tree can contain compiler cache, metadata, and arbitrary
         -- JSON. A file is an artifact only if it has a storageLayout member.
-        Left _ -> Right layouts
+        Left _ -> Right indexed
         Right value -> case parseArtifactStorageLayout path value of
           Left err -> Left err
-          Right Nothing -> Right layouts
-          Right (Just (names, layout)) -> Right $
-            foldl' (insertLayout layout) layouts names
+          Right Nothing -> Right indexed
+          Right (Just (names, runtimeCodehash, layout)) -> Right $
+            insertRuntimeLayout runtimeCodehash layout $
+              foldl' (insertLayout layout) indexed names
 
-    insertLayout layout layouts name = insertIndexedLayout name layout layouts
+    insertLayout layout indexed name =
+      indexed { indexedByName = insertIndexedLayout name layout indexed.indexedByName }
+
+    insertRuntimeLayout Nothing _ indexed = indexed
+    insertRuntimeLayout (Just runtimeCodehash) layout indexed =
+      indexed
+        { indexedByRuntimeCodehash =
+            insertIndexedLayout runtimeCodehash layout indexed.indexedByRuntimeCodehash
+        }
 
 type LayoutIndex = Map Text (Maybe StorageLayout)
+type RuntimeLayoutIndex = Map W256 (Maybe StorageLayout)
+
+data IndexedLayouts = IndexedLayouts
+  { indexedByName :: LayoutIndex
+  , indexedByRuntimeCodehash :: RuntimeLayoutIndex
+  }
+
+emptyIndexedLayouts :: IndexedLayouts
+emptyIndexedLayouts = IndexedLayouts Map.empty Map.empty
+
+finalizeLayoutIndex :: IndexedLayouts -> StorageLayoutIndex
+finalizeLayoutIndex indexed = StorageLayoutIndex
+  { layoutsByName = Map.mapMaybe id indexed.indexedByName
+  , layoutsByRuntimeCodehash = Map.mapMaybe id indexed.indexedByRuntimeCodehash
+  }
 
 -- Keep an alias only while every artifact that claims it has the same layout.
 -- Projects commonly contain duplicate simple contract names; silently taking
 -- the first makes automatic and explicit assignments depend on directory order.
-insertIndexedLayout :: Text -> StorageLayout -> LayoutIndex -> LayoutIndex
+insertIndexedLayout :: Ord key => key -> StorageLayout -> Map key (Maybe StorageLayout) -> Map key (Maybe StorageLayout)
 insertIndexedLayout name layout = Map.alter update name
   where
     update Nothing = Just (Just layout)
@@ -225,19 +263,19 @@ insertIndexedLayout name layout = Map.alter update name
       | otherwise = Just Nothing
     update (Just Nothing) = Just Nothing
 
-addProjectRootAliases :: FilePath -> Map Text StorageLayout -> Map Text StorageLayout
-addProjectRootAliases projectRoot layouts =
-  Map.mapMaybe id $ foldl' addAlias initial (Map.toList layouts)
+addProjectRootAliases :: FilePath -> StorageLayoutIndex -> StorageLayoutIndex
+addProjectRootAliases projectRoot index =
+  index { layoutsByName = Map.mapMaybe id $ foldl' addAlias initial (Map.toList index.layoutsByName) }
   where
-    initial = Just <$> layouts
-    addAlias index (name, layout) = case splitQualifiedName name of
-      Nothing -> index
+    initial = Just <$> index.layoutsByName
+    addAlias names (name, layout) = case splitQualifiedName name of
+      Nothing -> names
       Just (source, contractName) ->
         let absoluteSource = if isAbsolute (T.unpack source)
               then normalise (T.unpack source)
               else normalise (projectRoot </> T.unpack source)
             absoluteName = T.pack absoluteSource <> ":" <> contractName
-        in insertIndexedLayout absoluteName layout index
+        in insertIndexedLayout absoluteName layout names
 
 splitQualifiedName :: Text -> Maybe (Text, Text)
 splitQualifiedName name = do
@@ -278,7 +316,7 @@ collectArtifactFiles = walk
 parseArtifactStorageLayout
   :: FilePath
   -> Value
-  -> Either Text (Maybe ([Text], StorageLayout))
+  -> Either Text (Maybe ([Text], Maybe W256, StorageLayout))
 parseArtifactStorageLayout path artifact@(Object object) =
   case KeyMap.lookup "storageLayout" object of
     Nothing -> Right Nothing
@@ -288,8 +326,33 @@ parseArtifactStorageLayout path artifact@(Object object) =
       | otherwise -> case parseStorageLayoutValue layoutValue of
           Left err -> Left $
             "Unable to parse storageLayout in " <> T.pack path <> ": " <> T.pack (show err)
-          Right layout -> Right . Just $ (artifactContractNames path artifact layoutValue, layout)
+          Right layout -> do
+            runtimeCodehash <- artifactRuntimeCodehash path object
+            Right . Just $ (artifactContractNames path artifact layoutValue, runtimeCodehash, layout)
 parseArtifactStorageLayout _ _ = Right Nothing
+
+artifactRuntimeCodehash :: FilePath -> KeyMap.KeyMap Value -> Either Text (Maybe W256)
+artifactRuntimeCodehash path artifact = case KeyMap.lookup "deployedBytecode" artifact of
+  Nothing -> Right Nothing
+  Just (Object deployedBytecode) -> case KeyMap.lookup "object" deployedBytecode of
+    Just (String rawBytecode)
+      | T.null (strip0x rawBytecode) -> Right Nothing
+      | otherwise -> do
+          runtimeCode <- decodeHexBytecode path rawBytecode
+          Right . Just . keccak' $ stripBytecodeMetadata runtimeCode
+    _ -> Right Nothing
+  Just _ -> Left $ "Invalid deployedBytecode in " <> T.pack path
+
+decodeHexBytecode :: FilePath -> Text -> Either Text BS.ByteString
+decodeHexBytecode path rawBytecode =
+  first renderDecodeError $
+    BS16.decode (TE.encodeUtf8 $ strip0x rawBytecode)
+  where
+    renderDecodeError err =
+      "Invalid deployedBytecode.object hex in " <> T.pack path <> ": " <> T.pack err
+
+strip0x :: Text -> Text
+strip0x value = fromMaybe value (T.stripPrefix "0x" value)
 
 -- Interfaces have no bytecode and an explicitly empty storage list. Abstract
 -- contracts with declared storage are retained so their layouts can be assigned.
