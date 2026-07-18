@@ -25,7 +25,7 @@ import Data.Aeson (FromJSON(..), Value(..), eitherDecodeStrict', withObject, (.:
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, parseEither)
 import Data.Bifunctor (first)
-import Data.Bits ((.&.), (.|.), complement, shiftL, shiftR)
+import Data.Bits ((.&.), (.|.), complement, shiftL, shiftR, testBit)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (isAlpha, isAlphaNum, isSpace)
@@ -735,8 +735,84 @@ consumeMappingKey
   -> Either RVMError (ByteString, KeyCursor)
 consumeMappingKey keyType keyId keys cursor
   | keyType.encoding == "bytes" = consumeDynamicKey keyType.label keys cursor
-  | validStaticMappingKey keyType = consumeHead keyType.label keys cursor
+  | validStaticMappingKey keyType = do
+      (encodedKey, nextCursor) <- consumeHead keyType.label keys cursor
+      (, nextCursor) <$> canonicalStaticMappingKey keyType keyId encodedKey
   | otherwise = Left $ UnsupportedMappingKey keyId keyType.label
+
+canonicalStaticMappingKey
+  :: StorageType
+  -> Text
+  -> ByteString
+  -> Either RVMError ByteString
+canonicalStaticMappingKey keyType keyId encodedKey
+  | keyType.label == "bool" = validateBoolKey
+  | keyType.label == "address"
+      || keyType.label == "address payable"
+      || "contract " `T.isPrefixOf` keyType.label =
+        validateZeroExtended 20 "address"
+  | Just bitsText <- T.stripPrefix "uint" keyType.label =
+      integerBytes "uint" bitsText >>= flip validateZeroExtended keyType.label
+  | Just bitsText <- T.stripPrefix "int" keyType.label =
+      integerBytes "int" bitsText >>= flip validateSignExtended keyType.label
+  | Just bytesText <- T.stripPrefix "bytes" keyType.label
+  , not (T.null bytesText) =
+      fixedBytesWidth bytesText >>= flip validateFixedBytes keyType.label
+  | "t_enum" `T.isPrefixOf` keyId =
+      validateZeroExtended keyType.numberOfBytes keyType.label
+  | otherwise = Right encodedKey
+  where
+    validateBoolKey = do
+      _ <- validateZeroExtended 1 "bool"
+      when (BS.last encodedKey > 1) $
+        Left $ InvalidABIKeys "mapping key for `bool` is not canonical ABI"
+      pure encodedKey
+
+    integerBytes prefix bitsText = do
+      bits <- integerBits prefix bitsText
+      pure $ fromInteger (bits `div` 8)
+
+    integerBits prefix bitsText = do
+      bits <- if T.null bitsText
+        then Right 256
+        else parseDecimalInteger ("mapping key width for `" <> keyType.label <> "`") bitsText
+      if bits > 0 && bits <= 256 && bits `mod` 8 == 0
+        then Right bits
+        else Left $ InvalidLayout ("invalid `" <> prefix <> "` mapping key width: " <> keyType.label)
+
+    fixedBytesWidth bytesText = do
+      width <- parseDecimalInteger ("mapping key width for `" <> keyType.label <> "`") bytesText
+      if width > 0 && width <= 32
+        then Right (fromInteger width)
+        else Left $ InvalidLayout ("invalid fixed-bytes mapping key width: " <> keyType.label)
+
+    validateZeroExtended width label = do
+      validateStaticKeyWidth width label
+      let (padding, _) = BS.splitAt (32 - width) encodedKey
+      when (BS.any (/= 0) padding) $
+        Left $ InvalidABIKeys ("mapping key for `" <> label <> "` is not canonical ABI")
+      pure encodedKey
+
+    validateSignExtended width label = do
+      validateStaticKeyWidth width label
+      let (padding, valueBytes) = BS.splitAt (32 - width) encodedKey
+          extension = if not (BS.null valueBytes) && testBit (BS.head valueBytes) 7
+            then 0xff
+            else 0x00
+      when (BS.any (/= extension) padding) $
+        Left $ InvalidABIKeys ("mapping key for `" <> label <> "` is not canonical ABI")
+      pure encodedKey
+
+    validateFixedBytes width label = do
+      validateStaticKeyWidth width label
+      let (_, padding) = BS.splitAt width encodedKey
+      when (BS.any (/= 0) padding) $
+        Left $ InvalidABIKeys ("mapping key for `" <> label <> "` is not canonical ABI")
+      pure encodedKey
+
+    validateStaticKeyWidth width label =
+      when (width <= 0 || width > 32) $
+        Left $ InvalidLayout ("invalid static mapping key width for `" <> label <> "`")
 
 consumeHead
   :: Text

@@ -61,6 +61,22 @@ rvmTests = testGroup "RVM storage layouts"
       let expected = keccak' ("alice" <> word256Bytes 0)
       resolveStoragePath layout "names" (abiString "alice")
         @?= Right (ResolvedSlot expected 0 32)
+  , testCase "static mapping keys must use canonical ABI words" $ do
+      addressLayout <- expectRight $ parseCompactLayout "mapping(address => uint256) accounts"
+      uintLayout <- expectRight $ parseCompactLayout "mapping(uint8 => uint256) smalls"
+      intLayout <- expectRight $ parseCompactLayout "mapping(int8 => uint256) ints"
+      boolLayout <- expectRight $ parseCompactLayout "mapping(bool => uint256) flags"
+      bytesLayout <- expectRight $ parseCompactLayout "mapping(bytes4 => uint256) sigs"
+      assertInvalidABIKey $
+        resolveStoragePath addressLayout "accounts" (BS.singleton 1 <> BS.replicate 31 0)
+      assertInvalidABIKey $ resolveStoragePath uintLayout "smalls" (word256Bytes 0x100)
+      assertInvalidABIKey $ resolveStoragePath intLayout "ints" (word256Bytes 0xff)
+      assertInvalidABIKey $ resolveStoragePath boolLayout "flags" (word256Bytes 2)
+      assertInvalidABIKey $ resolveStoragePath bytesLayout "sigs" (word256Bytes 0xdeadbeef)
+      let canonicalBytes4 = BS.pack [0xde, 0xad, 0xbe, 0xef] <> BS.replicate 28 0
+          expected = keccak' (canonicalBytes4 <> word256Bytes 0)
+      resolveStoragePath bytesLayout "sigs" canonicalBytes4
+        @?= Right (ResolvedSlot expected 0 32)
   , testCase "fixed arrays reject out-of-bounds indexes" $ do
       layout <- expectRight $ parseCompactLayout "uint16[3] values"
       assertBool "expected a detailed bounds error" $
@@ -112,6 +128,13 @@ rvmTests = testGroup "RVM storage layouts"
 
 expectRight :: (Show error) => Either error value -> IO value
 expectRight = either (fail . show) pure
+
+assertInvalidABIKey :: Show a => Either RVMError a -> IO ()
+assertInvalidABIKey result =
+  assertBool "expected InvalidABIKeys" $
+    case result of
+      Left (InvalidABIKeys _) -> True
+      _ -> False
 
 abiWords :: [W256] -> ByteString
 abiWords = BS.concat . map word256Bytes
