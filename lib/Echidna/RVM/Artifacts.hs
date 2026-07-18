@@ -126,17 +126,32 @@ loadFoundryStorageLayoutsUnchecked start = findFoundryProjectRoot start >>= \cas
           Nothing -> pure (Right ())
           Just forgeExecutable -> runForgeBuild forgeExecutable projectRoot
         case buildResult of
-          Left err -> pure (Left err)
-          Right () -> do
-            outputExists <- doesDirectoryExist outputDirectory
-            if outputExists
-              then fmap (fmap $ addProjectRootAliases projectRoot) $
-                loadStorageLayoutsFromArtifactsUnchecked outputDirectory
-              else pure . Left $
-                "Foundry artifact directory does not exist: " <> T.pack outputDirectory
-                <> if forge == Nothing
-                     then " (forge is unavailable, so existing artifacts are required)"
-                     else " (forge build succeeded but did not create the configured output directory)"
+          Left buildErr -> do
+            fallback <- loadConfiguredOutputArtifacts projectRoot outputDirectory
+            pure $ case fallback of
+              Right layouts | not (storageLayoutIndexNull layouts) -> Right layouts
+              Right _ -> Left $
+                buildErr <> "\nExisting Foundry artifacts did not contain any RVM storage layouts."
+              Left fallbackErr -> Left $
+                buildErr <> "\nAdditionally, existing Foundry artifacts could not be loaded:\n" <> fallbackErr
+          Right () -> loadConfiguredOutputArtifacts projectRoot outputDirectory
+
+storageLayoutIndexNull :: StorageLayoutIndex -> Bool
+storageLayoutIndexNull index =
+  Map.null index.layoutsByName && Map.null index.layoutsByRuntimeCodehash
+
+loadConfiguredOutputArtifacts
+  :: FilePath
+  -> FilePath
+  -> IO (Either Text StorageLayoutIndex)
+loadConfiguredOutputArtifacts projectRoot outputDirectory = do
+  outputExists <- doesDirectoryExist outputDirectory
+  if outputExists
+    then fmap (fmap $ addProjectRootAliases projectRoot) $
+      loadStorageLayoutsFromArtifactsUnchecked outputDirectory
+    else pure . Left $
+      "Foundry artifact directory does not exist: " <> T.pack outputDirectory
+      <> " (existing artifacts are required when forge is unavailable or build fails)"
 
 findConfiguredOutput
   :: FilePath
