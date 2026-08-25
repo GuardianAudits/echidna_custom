@@ -36,16 +36,28 @@ import EVM.ABI (AbiValue)
 import Echidna.ABI (GenDict(..))
 import Echidna.Events (extractEvents)
 import Echidna.Exec (execTx)
-import Echidna.Execution (replayCorpus, callseqWithStateFlush, updateTests)
+import Echidna.Execution (replayCorpus, callseqPlan, updateTests)
 import Echidna.UI.Report (ppTx)
-import Echidna.Mutator.Corpus (getCorpusMutation, seqMutatorsStateless, seqMutatorsStateful, fromConsts)
+import Echidna.Mutator.Corpus
+  ( getCorpusMutation
+  , mutateParent
+  , selectFromCorpus
+  , seqMutatorsStateless
+  , seqMutatorsStateful
+  , fromConsts
+  )
 import Echidna.Shrink (shrinkTest)
+import Echidna.Snapshot
+  ( MutationPlan(..)
+  , noPlan
+  )
 import Echidna.Transaction (genTx, genTxFromPrototype)
 import Echidna.Types.Random (rElem)
 import qualified Data.List.NonEmpty as NE
 import Echidna.Types.Agent
-import Echidna.Types.Campaign (WorkerState(..), CampaignConf(..), emptySampleStats, maxSampledFunctions)
+import Echidna.Types.Campaign (WorkerState(..), CampaignConf(..), emptySampleStats, maxSampledFunctions, initialWorkerState)
 import Echidna.Types.Config (Env(..), EConfig(..), markInitialCorpusReplayWorkerComplete)
+import Echidna.Types.Corpus (Corpus)
 import Echidna.Types.InterWorker (AgentId(..), Bus, WrappedMessage(..), Message(..), FuzzerCmd(..))
 import Echidna.Types.Test (EchidnaTest(..), TestState(..), TestType(..), isOpen, isOptimizationTest)
 import Echidna.Types.Tx (Tx, TxResult(..), getResult)
@@ -83,16 +95,9 @@ instance Agent FuzzerAgent where
         effectiveSeed = dict.defSeed + workerId
         effectiveGenDict = dict { defSeed = effectiveSeed }
 
-        initialState = WorkerState
+        initialState = initialWorkerState
           { workerId
           , genDict = effectiveGenDict
-          , newCoverage = False
-          , ncallseqs = 0
-          , ncalls = 0
-          , totalGas = 0
-          , runningThreads = []
-          , prioritizedSequences = []
-          , sampledFunctions = Map.empty
           }
 
     -- Callback to update the IORef with the current state
@@ -185,7 +190,7 @@ fuzzerLoop callback vm testLimit bus = do
        | otherwise ->
          callback >> pure TestLimitReached
 
-  fuzz = randseq vm.env.contracts >>= fmap fst . (\txs -> callseqWithStateFlush callback vm txs False)
+  fuzz = randseq vm.env.contracts >>= fmap fst . (\plan -> callseqPlan callback vm plan False)
 
   shrink = do
     wid <- gets (.workerId)
@@ -310,7 +315,7 @@ isAssertionLog event =
 randseq
   :: (MonadRandom m, MonadReader Env m, MonadState WorkerState m, MonadIO m)
   => Map (Expr 'EAddr) Contract
-  -> m [Tx]
+  -> m MutationPlan
 randseq deployedContracts = do
   -- 1. Check for prioritized sequences injected via tools
   prioritized <- gets (.prioritizedSequences)
@@ -324,7 +329,7 @@ randseq deployedContracts = do
              pure $ if useIt then Just seqPrototype else Nothing
 
   case mbSeq of
-    Just seqPrototype -> genPrioritizedSeq deployedContracts seqPrototype
+    Just seqPrototype -> noPlan <$> genPrioritizedSeq deployedContracts seqPrototype
     Nothing -> genStandardSeq deployedContracts
 
 -- | Generate a sequence of transactions based on a prioritized prototype
@@ -388,12 +393,13 @@ genPrioritizedSeq deployedContracts seqPrototype = do
 genStandardSeq
   :: (MonadRandom m, MonadReader Env m, MonadState WorkerState m, MonadIO m)
   => Map (Expr 'EAddr) Contract
-  -> m [Tx]
+  -> m MutationPlan
 genStandardSeq deployedContracts = do
        env <- ask
        let world = env.world
-           mutConsts = env.cfg.campaignConf.mutConsts
-           seqLen = env.cfg.campaignConf.seqLen
+           campaignConf = env.cfg.campaignConf
+           mutConsts = campaignConf.mutConsts
+           seqLen = campaignConf.seqLen
 
        -- 3. Standard fuzzing behavior (no prioritized sequence selected)
        -- Generate new random transactions
@@ -401,9 +407,32 @@ genStandardSeq deployedContracts = do
        -- Generate a random mutator
        cmut <- if seqLen == 1 then seqMutatorsStateless (fromConsts mutConsts)
                               else seqMutatorsStateful (fromConsts mutConsts)
-       -- Fetch the mutator
-       let mut = getCorpusMutation cmut
        corpus <- liftIO $ readIORef env.corpusRef
        if null corpus
-         then pure randTxs -- Use the generated random transactions
-         else mut seqLen corpus randTxs -- Apply the mutator
+         then pure (noPlan randTxs)
+         else if campaignConf.snapshotPrefixes && campaignConf.maxSnapshotsPerSequence > 0
+                then do
+                  parent <- takeStickyParent corpus
+                  mutateParent cmut seqLen corpus parent randTxs
+                else getCorpusMutation cmut seqLen corpus randTxs
+
+-- | Reuse one in-memory parent for campaignConf.mutationBatchSize mutations.
+-- Corpus is append-only during a short batch, so we do not rescan it.
+takeStickyParent
+  :: (MonadRandom m, MonadReader Env m, MonadState WorkerState m)
+  => Corpus
+  -> m [Tx]
+takeStickyParent corpus = do
+  batchSize <- asks (.cfg.campaignConf.mutationBatchSize)
+  ws <- get
+  case (ws.mutationBatchParent, ws.mutationBatchLeft) of
+    (Just p, n) | n > 0 -> do
+      modify' $ \s -> s { mutationBatchLeft = n - 1 }
+      pure p
+    _ -> do
+      p <- selectFromCorpus corpus
+      modify' $ \s -> s
+        { mutationBatchParent = Just p
+        , mutationBatchLeft = max 1 batchSize - 1
+        }
+      pure p

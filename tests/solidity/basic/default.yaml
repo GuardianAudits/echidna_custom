@@ -22,6 +22,12 @@ testLimit: 50000
 stopOnFail: false
 #seqLen defines how many transactions are in a test sequence
 seqLen: 100
+# restore VM state after a shared prefix instead of re-executing it
+snapshotPrefixes: true
+# max intermediate VMs kept per in-flight sequence (evenly spaced)
+maxSnapshotsPerSequence: 64
+# consecutive mutations of one parent when snapshots are on (1 = no sticky batch)
+mutationBatchSize: 8
 #shrinkLimit determines how much effort is spent shrinking failing sequences
 shrinkLimit: 5000
 #coverage controls coverage guided testing

@@ -56,6 +56,7 @@ import Echidna.Types.Config
   , initialCorpusReplayComplete
   )
 import Echidna.Types.World (World(..))
+import Echidna.Snapshot (SnapshotStats(..), emptySnapshotStats, mergeSnapshotStats)
 import Echidna.Types.Campaign
   ( getNFuzzWorkers, CampaignConf(..), WorkerState(..)
   , SampleStats(..), mergeSampleStats
@@ -119,6 +120,7 @@ statusTool workerRefs statusRef _ env _ = do
         Just t  -> toJSON (round (diffUTCTime now t) :: Integer)
 
   let samples = map sampleStatsJson (Map.toList (collectSamples workers))
+      snap = foldl mergeSnapshotStats emptySnapshotStats (map (.snapshotStats) workers)
 
   pure $ BL8.unpack $ encode $ object
     [ "corpus_size"                  .= Set.size c
@@ -131,6 +133,14 @@ statusTool workerRefs statusRef _ env _ = do
     , "time_since_last_coverage_sec" .= timeSinceCov
     , "recent_covered_functions"     .= st.coveredFunctions
     , "samples"                      .= samples
+    , "snapshots"                    .= object
+        [ "lookups"     .= snap.snapLookups
+        , "hits"        .= snap.snapHits
+        , "exact_hits"  .= snap.snapExactHits
+        , "skipped"     .= snap.snapSkipped
+        , "gap_replay"  .= snap.snapGapReplay
+        , "misses"      .= snap.snapMisses
+        ]
     ]
 
 -- | Helper functions for inject_transaction
@@ -1000,7 +1010,17 @@ streamableStatusSnapshot startedAt now workers failedTests totalTests points cod
         ]
     , "corpus" .= object ["size" .= corpusSize]
     , "elapsedMs" .= (max 0 elapsedMs :: Int)
+    , "snapshots" .= object
+        [ "lookups"    .= snap.snapLookups
+        , "hits"       .= snap.snapHits
+        , "exact_hits" .= snap.snapExactHits
+        , "skipped"    .= snap.snapSkipped
+        , "gap_replay" .= snap.snapGapReplay
+        , "misses"     .= snap.snapMisses
+        ]
     ]
+  where
+    snap = foldl mergeSnapshotStats emptySnapshotStats (map (.snapshotStats) workers)
 
 data StreamableEventsArgs = StreamableEventsArgs
   { eventsSince :: Maybe Int

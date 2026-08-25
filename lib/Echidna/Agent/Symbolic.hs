@@ -38,14 +38,15 @@ import EVM.Dapp (DappInfo(..))
 import Echidna.Types.Solidity (SolConf(..))
 import Echidna.ABI (GenDict(..))
 import qualified Echidna.Exec
-import Echidna.Execution (callseq, updateTests)
+import Echidna.Execution (callseq, callseqPlan, updateTests)
 import Echidna.Shrink (shrinkTest)
+import Echidna.Snapshot (MutationPlan(..))
 import Echidna.Solidity (chooseContract)
 import Echidna.SymExec.Common (extractTxs, extractErrors)
 import Echidna.SymExec.Exploration (exploreContract, getTargetMethodFromTx, getRandomTargetMethod)
 import Echidna.SymExec.Verification (verifyMethod, isSuitableToVerifyMethod)
 import Echidna.Types.Agent
-import Echidna.Types.Campaign (WorkerState(..), CampaignConf(..), getNFuzzWorkers)
+import Echidna.Types.Campaign (WorkerState(..), CampaignConf(..), getNFuzzWorkers, initialWorkerState)
 import Echidna.Types.Config (Env(..), EConfig(..))
 import Echidna.Types.InterWorker (AgentId(..), Bus, WrappedMessage(..), Message(..), SymbolicCmd(..), FuzzerCmd(..), BroadcastMsg(NewCoverageInfo))
 import qualified Echidna.Types.InterWorker as InterWorker
@@ -84,16 +85,9 @@ instance Agent SymbolicAgent where
         effectiveSeed = dict.defSeed + workerId
         effectiveGenDict = dict { defSeed = effectiveSeed }
 
-        initialState = WorkerState
+        initialState = initialWorkerState
           { workerId
           , genDict = effectiveGenDict
-          , newCoverage = False
-          , ncallseqs = 0
-          , ncalls = 0
-          , totalGas = 0
-          , runningThreads = []
-          , prioritizedSequences = []
-          , sampledFunctions = Map.empty
           }
 
     let callback = get >>= liftIO . writeIORef ref
@@ -148,7 +142,7 @@ handleMessage
   -> Maybe Text
   -> m ()
 handleMessage _ (WrappedMessage _ (Broadcast (NewCoverageInfo _ txs _))) callback vm name = do
-    void $ callseq vm txs False
+    void $ callseqPlan (pure ()) vm (MutationPlan (Just txs) txs) False
     symexecTxs callback vm False name txs
     shrinkAndRandomlyExplore callback vm txs (10 :: Int)
 
@@ -376,7 +370,7 @@ exploreAndVerify callback vm contract method vm' txsBase = do
     -- For now, let's assume I can get it.
     -- I'll pass it from runAgent -> busListenerLoop -> handleMessage -> symexecTxs -> symexecTx -> exploreAndVerify
 
-    newCoverage <- or <$> mapM (\symTx -> snd <$> callseq vm (txsBase <> [symTx]) False) txs
+    newCoverage <- or <$> mapM (\symTx -> snd <$> callseqPlan (pure ()) vm (MutationPlan (Just txsBase) (txsBase <> [symTx])) False) txs
 
     when (not newCoverage && null errors && not (null txs)) (
       pushWorkerEvent $ SymExecError "No errors but symbolic execution found valid txs breaking assertions. Something is wrong.")

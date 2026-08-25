@@ -17,6 +17,7 @@ import Tests.Overflow (overflowTests)
 import Tests.Research (researchTests)
 import Tests.Sample (sampleTests)
 import Tests.Seed (seedTests)
+import Tests.Snapshot (snapshotTests)
 import Tests.Symbolic (symbolicTests)
 import Tests.Values (valuesTests)
 
@@ -26,6 +27,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            [ configTests
            , compilationTests
            , seedTests
+           , snapshotTests
            , integrationTests
            , valuesTests
            , coverageTests

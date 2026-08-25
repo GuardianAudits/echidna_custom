@@ -4,6 +4,7 @@ import Control.Monad.Random.Strict (MonadRandom, getRandomR, weighted)
 import Data.Set qualified as Set
 
 import Echidna.Mutator.Array
+import Echidna.Snapshot (MutationPlan(..))
 import Echidna.Transaction (mutateTx, shrinkTx)
 import Echidna.Types (MutationConsts)
 import Echidna.Types.Corpus
@@ -37,29 +38,6 @@ mutator Expansion = expandRandList
 mutator Swapping = swapRandList
 mutator Deletion = deleteRandList
 
-selectAndMutate
-  :: MonadRandom m
-  => ([Tx] -> m [Tx])
-  -> Corpus
-  -> m [Tx]
-selectAndMutate f corpus = do
-  rtxs <- selectFromCorpus corpus
-  k <- getRandomR (0, length rtxs - 1)
-  f $ take k rtxs
-
-selectAndCombine
-  :: MonadRandom m
-  => ([Tx] -> [Tx] -> m [Tx])
-  -> Int
-  -> Corpus
-  -> [Tx]
-  -> m [Tx]
-selectAndCombine f ql corpus gtxs = do
-  rtxs1 <- selectFromCorpus corpus
-  rtxs2 <- selectFromCorpus corpus
-  txs <- f rtxs1 rtxs2
-  pure . take ql $ txs <> gtxs
-
 selectFromCorpus
   :: MonadRandom m
   => Corpus
@@ -67,23 +45,108 @@ selectFromCorpus
 selectFromCorpus =
   weighted . map (\(i, txs) -> (txs, fromIntegral i)) . Set.toDescList
 
+-- | Append-style mutation of an explicit parent. The parent is the original
+-- selected prefix; the candidate may differ from index 0 if @f@ rewrites it.
+appendFromParent
+  :: MonadRandom m
+  => ([Tx] -> m [Tx])
+  -> Int
+  -> [Tx]
+  -> [Tx]
+  -> m MutationPlan
+appendFromParent f ql parent gtxs
+  | null parent =
+      MutationPlan Nothing . take ql . (++ gtxs) <$> f []
+  | otherwise = do
+      k <- getRandomR (0, length parent - 1)
+      let origPrefix = take k parent
+      mutatedPrefix <- f origPrefix
+      pure MutationPlan
+        { planParent = Just parent
+        , planCandidate = take ql (mutatedPrefix ++ gtxs)
+        }
+
+-- | Prepend-style mutation: generated txs come first, so the corpus parent is
+-- not a prefix of the candidate. No snapshot parent.
+prependFromParent
+  :: MonadRandom m
+  => ([Tx] -> m [Tx])
+  -> Int
+  -> [Tx]
+  -> [Tx]
+  -> m MutationPlan
+prependFromParent f ql parent gtxs = do
+  rtxs' <- case parent of
+    [] -> f []
+    _ -> do
+      k <- getRandomR (0, length parent - 1)
+      f (take k parent)
+  j <- getRandomR (0, max 0 (ql - 1))
+  pure MutationPlan
+    { planParent = Nothing
+    , planCandidate = take ql (take j gtxs ++ rtxs')
+    }
+
+combineFromCorpus
+  :: MonadRandom m
+  => ([Tx] -> [Tx] -> m [Tx])
+  -> Int
+  -> Corpus
+  -> [Tx]
+  -> m MutationPlan
+combineFromCorpus f ql corpus gtxs = do
+  rtxs1 <- selectFromCorpus corpus
+  rtxs2 <- selectFromCorpus corpus
+  txs <- f rtxs1 rtxs2
+  pure MutationPlan
+    { planParent = Nothing
+    , planCandidate = take ql (txs <> gtxs)
+    }
+
+applyCorpusMutation
+  :: MonadRandom m
+  => CorpusMutation
+  -> Int
+  -> [Tx]
+  -> [Tx]
+  -> m MutationPlan
+applyCorpusMutation (RandomAppend m) = appendFromParent (mutator m)
+applyCorpusMutation (RandomPrepend m) = prependFromParent (mutator m)
+applyCorpusMutation RandomSplice = \_ _ _ ->
+  error "applyCorpusMutation: RandomSplice needs two corpus sequences"
+applyCorpusMutation RandomInterleave = \_ _ _ ->
+  error "applyCorpusMutation: RandomInterleave needs two corpus sequences"
+
 getCorpusMutation
   :: MonadRandom m
   => CorpusMutation
-  -> (Int -> Corpus -> [Tx] -> m [Tx])
-getCorpusMutation (RandomAppend m) = mut (mutator m)
-  where
-    mut f ql ctxs gtxs = do
-      rtxs' <- selectAndMutate f ctxs
-      pure . take ql $ rtxs' ++ gtxs
-getCorpusMutation (RandomPrepend m) = mut (mutator m)
-  where
-    mut f ql ctxs gtxs = do
-      rtxs' <- selectAndMutate f ctxs
-      k <- getRandomR (0, ql - 1)
-      pure . take ql $ take k gtxs ++ rtxs'
-getCorpusMutation RandomSplice = selectAndCombine spliceAtRandom
-getCorpusMutation RandomInterleave = selectAndCombine interleaveAtRandom
+  -> (Int -> Corpus -> [Tx] -> m MutationPlan)
+getCorpusMutation (RandomAppend m) = \ql ctxs gtxs -> do
+  parent <- selectFromCorpus ctxs
+  appendFromParent (mutator m) ql parent gtxs
+getCorpusMutation (RandomPrepend m) = \ql ctxs gtxs -> do
+  parent <- selectFromCorpus ctxs
+  prependFromParent (mutator m) ql parent gtxs
+getCorpusMutation RandomSplice = combineFromCorpus spliceAtRandom
+getCorpusMutation RandomInterleave = combineFromCorpus interleaveAtRandom
+
+-- | Apply @cmut@ to an already chosen corpus parent (sticky sibling batches).
+mutateParent
+  :: MonadRandom m
+  => CorpusMutation
+  -> Int
+  -> Corpus
+  -> [Tx]
+  -> [Tx]
+  -> m MutationPlan
+mutateParent (RandomAppend m) ql _ parent gtxs =
+  appendFromParent (mutator m) ql parent gtxs
+mutateParent (RandomPrepend m) ql _ parent gtxs =
+  prependFromParent (mutator m) ql parent gtxs
+mutateParent RandomSplice ql corpus _ gtxs =
+  combineFromCorpus spliceAtRandom ql corpus gtxs
+mutateParent RandomInterleave ql corpus _ gtxs =
+  combineFromCorpus interleaveAtRandom ql corpus gtxs
 
 seqMutatorsStateful
   :: MonadRandom m

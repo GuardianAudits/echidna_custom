@@ -40,6 +40,7 @@ import Echidna.Agent.Fuzzer (FuzzerAgent(..))
 import Echidna.Agent.Symbolic (SymbolicAgent(..))
 import Echidna.MCP (runStreamableMCPServer)
 import Echidna.SourceAnalysis.Slither (isEmptySlitherInfo)
+import Echidna.Snapshot (SnapshotStats(..), emptySnapshotStats, mergeSnapshotStats, ppSnapshotStats)
 import Echidna.Types.Campaign
 import Echidna.Types.Config
 import Echidna.Types.Corpus qualified as Corpus
@@ -464,10 +465,15 @@ statusLine env states lastUpdateRef = do
           formatWorker (wid, step, seqLength) =
             "W" <> show wid <> ":" <> show step <> "/" <> show shrinkLimit <> "(" <> show seqLength <> ")"
 
+  let snap = foldl mergeSnapshotStats emptySnapshotStats ((.snapshotStats) <$> states)
+      snapPart
+        | snap.snapLookups == 0 = ""
+        | otherwise = ", " <> ppSnapshotStats snap
   pure $ "tests: " <> show (length $ filter didFail tests) <> "/" <> show (length tests)
     <> ", fuzzing: " <> show totalCalls <> "/" <> show env.cfg.campaignConf.testLimit
     <> ", values: " <> show ((.value) <$> filter isOptimizationTest tests)
     <> ", cov: " <> show points
     <> ", corpus: " <> show (Corpus.corpusSize corpus)
     <> shrinkingPart
+    <> snapPart
     <> ", gas/s: " <> show gasPerSecond

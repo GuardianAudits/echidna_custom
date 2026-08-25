@@ -17,6 +17,7 @@ import EVM.Solvers (Solver(..))
 import EVM.Types (Addr, VM(..), W256)
 
 import Echidna.Mutator.Corpus (defaultMutationConsts)
+import Echidna.Snapshot (defaultMaxSnapshotsPerSequence, defaultMutationBatchSize, defaultSnapshotPrefixes)
 import Echidna.Test
 import Echidna.Types.Campaign
 import Echidna.Types.Config
@@ -137,6 +138,9 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "symExecMaxIters"    ..!= defaultSymExecMaxIters
         <*> v ..:? "symExecAskSMTIters" ..!= defaultSymExecAskSMTIters
         <*> v ..:? "symExecMaxExplore"  ..!= defaultSymExecMaxExplore
+        <*> v ..:? "snapshotPrefixes"   ..!= defaultSnapshotPrefixes
+        <*> v ..:? "maxSnapshotsPerSequence" ..!= defaultMaxSnapshotsPerSequence
+        <*> v ..:? "mutationBatchSize"  ..!= defaultMutationBatchSize
         where
         smtSolver = v ..:? "symExecSMTSolver" >>= \case
           Just ("z3" :: String)  -> pure Z3

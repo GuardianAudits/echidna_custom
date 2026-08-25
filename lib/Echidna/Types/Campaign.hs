@@ -12,9 +12,15 @@ import EVM.Solvers (Solver(..))
 import EVM.ABI (AbiValue(..))
 
 import Echidna.ABI (GenDict, emptyDict)
+import Echidna.Snapshot
+  ( PrefixSnapshotCache
+  , SnapshotStats
+  , emptyPrefixSnapshotCache
+  , emptySnapshotStats
+  )
 import Echidna.Types
 import Echidna.Types.Coverage (CoverageFileType, CoverageMap)
-import Echidna.Types.Tx (TxResult(..))
+import Echidna.Types.Tx (Tx, TxResult(..))
 
 -- | Maximum number of functions that can be sampled simultaneously.
 maxSampledFunctions :: Int
@@ -165,6 +171,16 @@ data CampaignConf = CampaignConf
   , symExecMaxExplore :: Integer
     -- ^ Maximum number of states to explore before we stop exploring it.
     -- Only relevant if symExec is True
+  , snapshotPrefixes :: Bool
+    -- ^ Restore VM state after a shared prefix instead of re-executing it
+    -- when a mutated sequence first differs at index k. Default true.
+  , maxSnapshotsPerSequence :: Int
+    -- ^ Maximum intermediate VMs retained per in-flight sequence.
+    -- Evenly spaced; over-budget prefixes fall back to full replay or a
+    -- short gap replay from the nearest kept prefix.
+  , mutationBatchSize :: Int
+    -- ^ Consecutive mutations of one corpus parent while snapshots are on.
+    -- 1 disables sticky batching (baseline parent scheduling).
   }
 
 -- | The state of a fuzzing campaign.
@@ -189,6 +205,16 @@ data WorkerState = WorkerState
   , sampledFunctions :: !(Map Text SampleStats)
     -- ^ Functions whose calls are sampled for min/max return values and
     --   revert history. Keyed by canonical signature (e.g. "totalSupply()").
+  , prefixSnapshots :: !PrefixSnapshotCache
+    -- ^ Continuation VMs for the current mutator parent sequence.
+  , mutationBatchParent :: !(Maybe [Tx])
+    -- ^ Corpus parent reused for a batch of sibling mutations.
+  , mutationBatchLeft :: !Int
+    -- ^ Remaining sibling mutations before picking a new parent.
+  , snapshotStats :: !SnapshotStats
+    -- ^ Cache lookup / hit / skip counters for this worker.
+  , lastSeqSkipped :: !Int
+    -- ^ Prefix txs skipped by the last snapshot restore (0 on the baseline path).
   }
 
 initialWorkerState :: WorkerState
@@ -202,6 +228,11 @@ initialWorkerState =
               , runningThreads = []
               , prioritizedSequences = []
               , sampledFunctions = Map.empty
+              , prefixSnapshots = emptyPrefixSnapshotCache
+              , mutationBatchParent = Nothing
+              , mutationBatchLeft = 0
+              , snapshotStats = emptySnapshotStats
+              , lastSeqSkipped = 0
               }
 
 defaultTestLimit :: Int

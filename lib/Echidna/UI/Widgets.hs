@@ -29,6 +29,7 @@ import EVM.Format (showTraceTree)
 import EVM.Types (Addr, Contract, W256, VM(..), VMType(Concrete))
 
 import Echidna.ABI
+import Echidna.Snapshot (emptySnapshotStats, mergeSnapshotStats, ppSnapshotStats)
 import Echidna.Types.Campaign
 import Echidna.Types.Config
 import Echidna.Types.Test
@@ -205,6 +206,9 @@ summaryWidget env uiState =
       str ("Unique codehashes: " <> show uiState.numCodehashes)
       <=>
       str ("Corpus size: " <> show uiState.corpusSize <> " seqs")
+      <=>
+      str (ppSnapshotStats $ foldl mergeSnapshotStats emptySnapshotStats
+            ((.snapshotStats) <$> uiState.campaigns))
       <=>
       str ("New coverage: " <> timeElapsed uiState uiState.lastNewCov <> " ago") <+> fill ' '
       <=>

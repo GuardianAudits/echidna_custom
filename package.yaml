@@ -137,6 +137,7 @@ tests:
       - exceptions
       - optics-core
       - process
+      - random
       - semver
       - split
       - stm

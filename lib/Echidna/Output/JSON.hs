@@ -5,6 +5,7 @@ module Echidna.Output.JSON where
 import Data.Aeson hiding (Error)
 import Data.ByteString.Lazy qualified as L
 import Data.IORef (readIORef)
+import Data.List qualified as List
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Text
@@ -16,6 +17,7 @@ import EVM.Dapp (DappInfo)
 import Echidna.ABI (ppAbiValue, GenDict(..))
 import Echidna.Encoding (hexText)
 import Echidna.Events (Events, extractEvents)
+import Echidna.Snapshot (SnapshotStats(..), emptySnapshotStats, mergeSnapshotStats)
 import Echidna.Types.Campaign (WorkerState(..))
 import Echidna.Types.Config (Env(..))
 import Echidna.Types.Coverage (CoverageInfo, mergeCoverageMaps)
@@ -29,6 +31,7 @@ data Campaign = Campaign
   , _tests :: [Test]
   , seed :: Int
   , coverage :: Map String [CoverageInfo]
+  , snapshots :: SnapshotStats
   }
 
 instance ToJSON Campaign where
@@ -38,6 +41,14 @@ instance ToJSON Campaign where
     , "tests" .= _tests
     , "seed" .= seed
     , "coverage" .= coverage
+    , "snapshots" .= object
+        [ "lookups"    .= snapshots.snapLookups
+        , "hits"       .= snapshots.snapHits
+        , "exact_hits" .= snapshots.snapExactHits
+        , "skipped"    .= snapshots.snapSkipped
+        , "gap_replay" .= snapshots.snapGapReplay
+        , "misses"     .= snapshots.snapMisses
+        ]
     ]
 
 data Test = Test
@@ -107,12 +118,15 @@ encodeCampaign env workerStates = do
   let workerSeed [] = 0
       workerSeed (state:_) = state.genDict.defSeed
   let seed = workerSeed workerStates
+      snaps = List.foldl' mergeSnapshotStats emptySnapshotStats
+                ((.snapshotStats) <$> workerStates)
   pure $ encode Campaign
     { _success = True
     , _error = Nothing
     , _tests = mapTest env.dapp <$> tests
     , seed = seed
     , coverage = Map.mapKeys (("0x" ++) . (`showHex` "")) $ VU.toList <$> frozenCov
+    , snapshots = snaps
     }
 
 mapTest :: DappInfo -> EchidnaTest -> Test

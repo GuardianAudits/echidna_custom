@@ -1,5 +1,6 @@
 ## Unreleased
 
+* Prefix VM snapshots: restore a parent-sequence VM at the mutation index instead of replaying the prefix. Config: `snapshotPrefixes` (default true) and `maxSnapshotsPerSequence` (default 64). Cache is keyed by a parent hash (no corpus scan), fingerprints world storage/balances, drops VMResults, and reports hit/skip telemetry.
 * The reason a test failed (e.g. revert, returned false) is now shown consistently in the text, JSON and UI outputs, including when no transactions are required to reproduce the failure (#1476)
 
 ## 2.3.2

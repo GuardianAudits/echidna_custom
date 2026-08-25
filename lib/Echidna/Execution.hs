@@ -14,11 +14,13 @@ import Control.Monad.State.Strict
 import Data.Binary.Get (runGetOrFail)
 import Data.ByteString.Lazy qualified as LBS
 import Data.IORef (readIORef, atomicModifyIORef', writeIORef)
+import Data.IntMap.Strict qualified as IntMap
+import Data.IntSet qualified as IntSet
 import Data.List qualified as List
 import Data.Map (Map, (\\))
 import Data.Map qualified as Map
 import Data.Map.Strict qualified as MapStrict
-import Data.Maybe (isJust, mapMaybe)
+import Data.Maybe (isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Vector qualified as V
@@ -27,14 +29,16 @@ import Data.Text (Text)
 
 import EVM (cheatCode)
 import EVM.ABI (getAbi, AbiType(AbiAddressType, AbiTupleType), AbiValue(..), abiValueType)
-import EVM.Types (VM(..), VMResult(..), VMType(..), Expr(..))
+import EVM.Types (VM(..), VMResult(..), VMType(..), Expr(..), EvmError(Revert))
 import EVM.Types qualified as EVM
 
 import Echidna.ABI
 import Echidna.Events (extractEventValues)
 import Echidna.Exec
+import Echidna.Snapshot
 import Echidna.Types.Campaign
 import Echidna.Types.Config
+import Echidna.Types.Solidity (SolConf(..))
 import Echidna.Types.Corpus (Corpus, corpusSize)
 import Echidna.Types.Coverage (coverageStats)
 import Echidna.Types.InterWorker (WrappedMessage(..), Message(..), BroadcastMsg(NewCoverageInfo), AgentId(..))
@@ -86,7 +90,19 @@ callseqWithStateFlush
   -> [Tx]
   -> Bool
   -> m (VM Concrete, Bool)
-callseqWithStateFlush publishState vm txSeq isReplaying = do
+callseqWithStateFlush publishState vm txSeq isReplaying =
+  callseqPlan publishState vm (noPlan txSeq) isReplaying
+
+-- | Like 'callseqWithStateFlush', but the mutator parent is explicit so
+-- prefix snapshots can restore that parent rather than the last executed seq.
+callseqPlan
+  :: (MonadIO m, MonadThrow m, MonadRandom m, MonadReader Env m, MonadState WorkerState m)
+  => m ()
+  -> VM Concrete
+  -> MutationPlan
+  -> Bool
+  -> m (VM Concrete, Bool)
+callseqPlan publishState vm plan isReplaying = do
   env <- ask
   -- First, we figure out whether we need to execute with or without coverage
   -- optimization and gas info, and pick our execution function appropriately
@@ -98,15 +114,18 @@ callseqWithStateFlush publishState vm txSeq isReplaying = do
   -- Run each call sequentially. This gives us the result of each call
   -- and the new state
   let vm0 = resetTxTransientState vm
-  (results, vm', eventDiffs) <- evalSeq publishState vm0 execFunc txSeq
+  (results, vm', eventDiffs) <- evalSeqPlan publishState vm0 execFunc plan
 
   -- Update sample stats for any tracked functions. Off the hot path when
-  -- no functions are sampled (the common case).
+  -- no functions are sampled (the common case). Skipped prefix txs are not
+  -- resampled (they were counted when the parent ran).
   sampled <- gets (.sampledFunctions)
   unless (Map.null sampled) $ do
+    skipN <- gets (.lastSeqSkipped)
     rTypes <- gets (.genDict.rTypes)
     modify' $ \ws ->
-      ws { sampledFunctions = updateSampleStats rTypes sampled results }
+      ws { sampledFunctions =
+             updateSampleStats rTypes sampled (drop skipN results) }
 
   -- If there is new coverage, add the transaction list to the corpus
   newCoverage <- gets (.newCoverage)
@@ -258,7 +277,39 @@ evalSeq
   -> (VM Concrete -> Tx -> m (result, VM Concrete))
   -> [Tx]
   -> m ([(Tx, result)], VM Concrete, Map AbiType (Set AbiValue))
-evalSeq publishState vm0 execFunc = go vm0 [] Map.empty where
+evalSeq publishState vm0 execFunc txSeq =
+  evalSeqBaseline publishState vm0 execFunc txSeq
+
+-- | Snapshot-aware runner. Disabled campaigns must use 'evalSeq'/'evalSeqBaseline'
+-- so they do not allocate IntMaps or retain VMs.
+evalSeqPlan
+  :: (MonadIO m, MonadThrow m, MonadRandom m, MonadReader Env m, MonadState WorkerState m)
+  => m ()
+  -> VM Concrete
+  -> (VM Concrete -> Tx -> m (VMResult Concrete, VM Concrete))
+  -> MutationPlan
+  -> m ([(Tx, VMResult Concrete)], VM Concrete, Map AbiType (Set AbiValue))
+evalSeqPlan publishState vm0 execFunc plan = do
+  conf <- asks (.cfg.campaignConf)
+  env <- ask
+  let enabled = conf.snapshotPrefixes && conf.maxSnapshotsPerSequence > 0
+      rpcLatest = isJust env.cfg.rpcUrl && isNothing env.cfg.rpcBlock
+      allowed = snapshotReuseAllowed env.cfg.solConf.allowFFI rpcLatest
+  if enabled && allowed && isJust plan.planParent
+    then evalSeqSnap publishState vm0 execFunc plan
+    else do
+      modify' $ \ws -> ws { lastSeqSkipped = 0 }
+      evalSeqBaseline publishState vm0 execFunc plan.planCandidate
+
+-- | Original pre-snapshot runner: no IntMap, no snapshot retention.
+evalSeqBaseline
+  :: (MonadIO m, MonadThrow m, MonadRandom m, MonadReader Env m, MonadState WorkerState m)
+  => m ()
+  -> VM Concrete
+  -> (VM Concrete -> Tx -> m (result, VM Concrete))
+  -> [Tx]
+  -> m ([(Tx, result)], VM Concrete, Map AbiType (Set AbiValue))
+evalSeqBaseline publishState vm0 execFunc = go vm0 [] Map.empty where
   go vm executedSoFar eventDiffs toExecute = do
     -- NOTE: we do reverse here because we build up this list by prepending,
     -- see the last line of this function.
@@ -279,6 +330,104 @@ evalSeq publishState vm0 execFunc = go vm0 [] Map.empty where
         -- of each transaction - `m ([(Tx, result, VM)])`
         (remaining, vm'', eventDiffs'') <- go vm' (tx:executedSoFar) eventDiffs' remainingTxs
         pure ((tx, result) : remaining, vm'', eventDiffs'')
+
+-- | Restore from the mutator parent cache. Keep-set is computed once.
+-- Prefix txs are not reconstructed from retained VMResults (those buffers
+-- are not cached). Dictionary/sampling run on the executed suffix only.
+evalSeqSnap
+  :: (MonadIO m, MonadThrow m, MonadRandom m, MonadReader Env m, MonadState WorkerState m)
+  => m ()
+  -> VM Concrete
+  -> (VM Concrete -> Tx -> m (VMResult Concrete, VM Concrete))
+  -> MutationPlan
+  -> m ([(Tx, VMResult Concrete)], VM Concrete, Map AbiType (Set AbiValue))
+evalSeqSnap publishState vm0 execFunc plan = do
+  conf <- asks (.cfg.campaignConf)
+  cache <- gets (.prefixSnapshots)
+  let
+    txSeq = plan.planCandidate
+    maxN = conf.maxSnapshotsPerSequence
+    seqLen = length txSeq
+    parentLen = maybe seqLen length plan.planParent
+    keepSet = snapshotKeepIndices maxN parentLen
+    restore = restorePrefix cache vm0 plan
+    skipN = restore.restoreFrom
+    skipped = take skipN txSeq
+    remainingTxs0 = drop skipN txSeq
+    switchingParent =
+      restore.restoreFrom == 0 &&
+        case plan.planParent of
+          Just p -> cache.cachedParentKey /= Just (parentKey p)
+                    && not (IntMap.null cache.snapshots)
+          Nothing -> False
+  -- Drop the previous parent's VMs before allocating a new set so peak
+  -- retention is one cache, not two.
+  when switchingParent $
+    modify' $ \ws -> ws { prefixSnapshots = emptyPrefixSnapshotCache }
+  cache' <- gets (.prefixSnapshots)
+  let snaps0 = IntMap.filterWithKey (\k _ -> k <= skipN) cache'.snapshots
+      prefixResults = [ (tx, skippedPrefixResult) | tx <- skipped ]
+  (suffixResults, vm', eventDiffs, snaps') <-
+    go keepSet restore.restoreVM (reverse skipped) Map.empty snaps0 skipN remainingTxs0
+  modify' $ \ws ->
+    let wsStats = ws
+          { snapshotStats = recordSnapshotStats restore ws.snapshotStats
+          , lastSeqSkipped = skipN
+          }
+    in case plan.planParent of
+         Nothing -> wsStats
+         Just parent ->
+           let shared = firstDiffIndex parent txSeq
+               snapsKept = IntMap.filterWithKey
+                 (\i _ -> i <= shared && IntSet.member i keepSet) snaps'
+           in wsStats { prefixSnapshots = updateParentCache cache' parent vm0 snapsKept }
+  pure (prefixResults ++ suffixResults, vm', eventDiffs)
+  where
+  skippedPrefixResult = VMFailure (Revert (ConcreteBuf mempty))
+  go keepSet vm executedSoFar eventDiffs snaps idx toExecute = do
+    updateTests (updateOpenTest vm (reverse executedSoFar))
+    modify' $ \workerState -> workerState { ncalls = workerState.ncalls + 1 }
+    publishState
+    case toExecute of
+      [] -> pure ([], resetTxTransientState vm, eventDiffs, snaps)
+      (tx:remainingTxs) -> do
+        (result, vm') <- execFunc vm tx
+        env <- ask
+        let
+          !txEventDiffs = force $ extractEventValues env.dapp (vm { logs = [] }) vm'
+          !eventDiffs' = force $ Map.unionWith Set.union txEventDiffs eventDiffs
+          idx' = idx + 1
+        snaps' <-
+          if isJust plan.planParent && IntSet.member idx' keepSet
+            then do
+              snap <- mkPrefixSnapshot vm'
+              pure $ IntMap.insert idx' snap snaps
+            else
+              pure snaps
+        modify' $ \workerState -> workerState { totalGas = workerState.totalGas + fromIntegral (vm'.burned - vm.burned) }
+        (remaining, vm'', eventDiffs'', snaps'') <-
+          go keepSet vm' (tx:executedSoFar) eventDiffs' snaps' idx' remainingTxs
+        pure ((tx, result) : remaining, vm'', eventDiffs'', snaps'')
+
+updateParentCache
+  :: PrefixSnapshotCache
+  -> [Tx]
+  -> VM Concrete
+  -> IntMap.IntMap (VM Concrete)
+  -> PrefixSnapshotCache
+updateParentCache cache parent vm0 snapsKept =
+  let fp = Just (vmFingerprint vm0)
+      key = parentKey parent
+      sameWorld =
+        cache.cachedParentKey == Just key
+        && fingerprintsMatch cache.snapFingerprint vm0
+  in if sameWorld
+       then PrefixSnapshotCache
+              { cachedParentKey = Just key
+              , snapshots = IntMap.union cache.snapshots snapsKept
+              , snapFingerprint = cache.snapFingerprint
+              }
+       else PrefixSnapshotCache (Just key) snapsKept fp
 
 -- | Update tests based on the return value from the given function.
 -- Nothing skips the update.

@@ -3,7 +3,7 @@ module Echidna.UI.Report where
 import Control.Monad (forM)
 import Control.Monad.Reader (MonadReader, MonadIO (liftIO), asks, ask)
 import Data.IORef (readIORef, atomicModifyIORef')
-import Data.List (nub)
+import Data.List (foldl', nub)
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes, fromJust, fromMaybe)
 import Data.Text (Text, unpack)
@@ -19,6 +19,7 @@ import Echidna.ABI (GenDict(..), encodeSig)
 import Echidna.Pretty (ppTxCall)
 import Echidna.SourceMapping (findSrcByMetadata, lookupCodehash)
 import Echidna.SymExec.Symbolic (forceWord)
+import Echidna.Snapshot (emptySnapshotStats, mergeSnapshotStats, ppSnapshotStats)
 import Echidna.Types.Campaign
 import Echidna.Types.Config
 import Echidna.Types.Corpus (corpusSize)
@@ -68,12 +69,16 @@ ppCampaign workerStates = do
   let seedPrinted = "Seed: " <> ppSeed workerStates
   corpusPrinted <- ppCorpus
   let callsPrinted = ppTotalCalls workerStates
+      snapsPrinted = ppSnapshotStats $
+        foldl' mergeSnapshotStats emptySnapshotStats
+          ((.snapshotStats) <$> workerStates)
   pure $ unlines
     [ testsPrinted
     , coveragePrinted
     , corpusPrinted
     , seedPrinted
     , callsPrinted
+    , snapsPrinted
     ]
 
 -- | Given rules for pretty-printing associated addresses, and whether to print

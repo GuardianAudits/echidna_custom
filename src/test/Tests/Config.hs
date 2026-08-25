@@ -40,6 +40,27 @@ configTests = testGroup "Configuration tests" $
       assertBool "" $ isNothing (defaultConfig.campaignConf.corpusDir)
   , testCase "coverageDir defaults to Nothing" $
       assertBool "" $ isNothing (defaultConfig.campaignConf.coverageDir)
+  , testCase "snapshotPrefixes defaults to true" $
+      assertBool "empty YAML" defaultConfig.campaignConf.snapshotPrefixes
+  , testCase "maxSnapshotsPerSequence defaults to 64" $
+      assertEqual "default cap" 64 defaultConfig.campaignConf.maxSnapshotsPerSequence
+  , testCase "mutationBatchSize defaults to 8" $
+      assertEqual "default batch" 8 defaultConfig.campaignConf.mutationBatchSize
+  , testCase "parse snapshot prefix config" $ do
+      let yaml = BS8.pack $ unlines
+            [ "snapshotPrefixes: false"
+            , "maxSnapshotsPerSequence: 3"
+            , "mutationBatchSize: 1"
+            ]
+      case Y.decodeEither' yaml of
+        Right (c :: EConfigWithUsage) -> do
+          assertBool "snapshotPrefixes should be false" $
+            not c.econfig.campaignConf.snapshotPrefixes
+          assertEqual "maxSnapshotsPerSequence" 3
+            c.econfig.campaignConf.maxSnapshotsPerSequence
+          assertEqual "mutationBatchSize" 1
+            c.econfig.campaignConf.mutationBatchSize
+        Left e -> assertFailure $ "unexpected decoding error: " <> show e
   , testCase "parse mcp bounds" $ do
       let yaml = BS8.pack $ unlines
             [ "mcp:"
