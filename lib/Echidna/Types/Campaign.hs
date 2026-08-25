@@ -14,6 +14,7 @@ import EVM.ABI (AbiValue(..))
 import Echidna.ABI (GenDict, emptyDict)
 import Echidna.Snapshot
   ( PrefixSnapshotCache
+  , SnapshotMutators
   , SnapshotStats
   , emptyPrefixSnapshotCache
   , emptySnapshotStats
@@ -181,6 +182,10 @@ data CampaignConf = CampaignConf
   , mutationBatchSize :: Int
     -- ^ Consecutive mutations of one corpus parent while snapshots are on.
     -- 1 disables sticky batching (baseline parent scheduling).
+  , snapshotMutators :: SnapshotMutators
+    -- ^ Mutator mix while snapshots are on. Default keeps original
+    -- append/prepend/splice/interleave weights. 'append-only' and 'sticky'
+    -- are optional hit-rate policies.
   }
 
 -- | The state of a fuzzing campaign.

@@ -42,12 +42,13 @@ instance ToJSON Campaign where
     , "seed" .= seed
     , "coverage" .= coverage
     , "snapshots" .= object
-        [ "lookups"    .= snapshots.snapLookups
+        [ "eligible"   .= snapshots.snapLookups
         , "hits"       .= snapshots.snapHits
-        , "exact_hits" .= snapshots.snapExactHits
-        , "skipped"    .= snapshots.snapSkipped
-        , "gap_replay" .= snapshots.snapGapReplay
         , "misses"     .= snapshots.snapMisses
+        , "ineligible" .= snapshots.snapIneligible
+        , "skipped"    .= snapshots.snapSkipped
+        , "exact_hits" .= snapshots.snapExactHits
+        , "gap_replay" .= snapshots.snapGapReplay
         ]
     ]
 

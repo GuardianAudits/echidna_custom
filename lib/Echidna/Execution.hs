@@ -298,6 +298,10 @@ evalSeqPlan publishState vm0 execFunc plan = do
   if enabled && allowed && isJust plan.planParent
     then evalSeqSnap publishState vm0 execFunc plan
     else do
+      -- Prepend/splice/interleave (no parent prefix) still run; they must
+      -- not drop the sticky-parent VM cache.
+      when (enabled && allowed && isNothing plan.planParent) $
+        modify' $ \ws -> ws { snapshotStats = recordIneligible ws.snapshotStats }
       modify' $ \ws -> ws { lastSeqSkipped = 0 }
       evalSeqBaseline publishState vm0 execFunc plan.planCandidate
 

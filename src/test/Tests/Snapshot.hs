@@ -87,6 +87,13 @@ helperTests = testGroup "helpers"
         replicateM 40 (seqMutatorsSnapshot (1, 1, 1, 1))
       assertBool "prepend/splice/interleave must not appear" $
         all (\case RandomAppend _ -> True; _ -> False) muts
+  , testCase "ppSnapshotStats reports eligible/hits/miss/ineligible/skip" $
+      ppSnapshotStats emptySnapshotStats
+        @?= "snapshots: eligible 0, hits 0, miss 0, ineligible 0, skip 0"
+  , testCase "recordIneligible does not count as a lookup" $ do
+      let s = recordIneligible emptySnapshotStats
+      s.snapIneligible @?= 1
+      s.snapLookups @?= 0
   ]
 
 configParseTests :: TestTree
@@ -94,6 +101,7 @@ configParseTests = testGroup "config"
   [ testCase "empty YAML defaults snapshotPrefixes to true" $ do
       defaultConfig.campaignConf.snapshotPrefixes @?= True
       defaultConfig.campaignConf.maxSnapshotsPerSequence @?= 64
+      defaultConfig.campaignConf.snapshotMutators @?= SnapshotMutatorsOriginal
   ]
 
 evalSeqTests :: TestTree
@@ -117,10 +125,13 @@ evalSeqTests = testGroup "evalSeq restore"
           unrelated = mkSeq 6
           mutated = mutateAt 7 parent
       (_, _, _, ws1) <- runCounted (snapCfg True 64) initialWorkerState vm0 (seedPlan parent)
+      let lookups1 = ws1.snapshotStats.snapLookups
       (_, _, _, ws2) <- runCounted (snapCfg True 64) ws1 vm0 (noPlan unrelated)
       assertEqual "noPlan must not clobber parent cache"
         (Just (parentKey parent))
         ws2.prefixSnapshots.cachedParentKey
+      ws2.snapshotStats.snapIneligible @?= 1
+      ws2.snapshotStats.snapLookups @?= lookups1
       (n3, _, _, _) <-
         runCounted (snapCfg True 64) ws2 vm0 (sibPlan parent mutated)
       n3 @?= 3

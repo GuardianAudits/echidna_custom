@@ -134,12 +134,13 @@ statusTool workerRefs statusRef _ env _ = do
     , "recent_covered_functions"     .= st.coveredFunctions
     , "samples"                      .= samples
     , "snapshots"                    .= object
-        [ "lookups"     .= snap.snapLookups
+        [ "eligible"    .= snap.snapLookups
         , "hits"        .= snap.snapHits
-        , "exact_hits"  .= snap.snapExactHits
-        , "skipped"     .= snap.snapSkipped
-        , "gap_replay"  .= snap.snapGapReplay
         , "misses"      .= snap.snapMisses
+        , "ineligible"  .= snap.snapIneligible
+        , "skipped"     .= snap.snapSkipped
+        , "exact_hits"  .= snap.snapExactHits
+        , "gap_replay"  .= snap.snapGapReplay
         ]
     ]
 
@@ -1011,12 +1012,13 @@ streamableStatusSnapshot startedAt now workers failedTests totalTests points cod
     , "corpus" .= object ["size" .= corpusSize]
     , "elapsedMs" .= (max 0 elapsedMs :: Int)
     , "snapshots" .= object
-        [ "lookups"    .= snap.snapLookups
+        [ "eligible"   .= snap.snapLookups
         , "hits"       .= snap.snapHits
-        , "exact_hits" .= snap.snapExactHits
-        , "skipped"    .= snap.snapSkipped
-        , "gap_replay" .= snap.snapGapReplay
         , "misses"     .= snap.snapMisses
+        , "ineligible" .= snap.snapIneligible
+        , "skipped"    .= snap.snapSkipped
+        , "exact_hits" .= snap.snapExactHits
+        , "gap_replay" .= snap.snapGapReplay
         ]
     ]
   where

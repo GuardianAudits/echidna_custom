@@ -50,6 +50,7 @@ import Echidna.Mutator.Corpus
 import Echidna.Shrink (shrinkTest)
 import Echidna.Snapshot
   ( MutationPlan(..)
+  , SnapshotMutators(..)
   , noPlan
   )
 import Echidna.Transaction (genTx, genTxFromPrototype)
@@ -405,12 +406,23 @@ genStandardSeq deployedContracts = do
        -- 3. Standard fuzzing behavior (no prioritized sequence selected)
        -- Generate new random transactions
        randTxs <- replicateM seqLen (genTx world deployedContracts)
-       -- Generate a random mutator. Snapshot reuse needs an append-style
-       -- candidate that still shares a prefix with the sticky parent.
+       -- Default keeps the original mutator mix. Append-only / sticky are
+       -- optional hit-rate policies and must not be implied by snapshots.
        let useSnaps = campaignConf.snapshotPrefixes && campaignConf.maxSnapshotsPerSequence > 0
-       cmut <- if useSnaps then seqMutatorsSnapshot (fromConsts mutConsts)
-               else if seqLen == 1 then seqMutatorsStateless (fromConsts mutConsts)
-               else seqMutatorsStateful (fromConsts mutConsts)
+           consts = fromConsts mutConsts
+           diversity = if seqLen == 1
+                         then seqMutatorsStateless consts
+                         else seqMutatorsStateful consts
+       cmut <- if not useSnaps then diversity
+               else case campaignConf.snapshotMutators of
+                 SnapshotMutatorsAppendOnly -> seqMutatorsSnapshot consts
+                 SnapshotMutatorsSticky -> do
+                   ws <- get
+                   case (ws.mutationBatchParent, ws.mutationBatchLeft) of
+                     (Just _, n) | n > 1 -> seqMutatorsSnapshot consts
+                     (Just _, 1) -> diversity
+                     _ -> seqMutatorsSnapshot consts
+                 SnapshotMutatorsOriginal -> diversity
        corpus <- liftIO $ readIORef env.corpusRef
        if null corpus
          then pure (noPlan randTxs)

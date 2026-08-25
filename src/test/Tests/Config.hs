@@ -10,6 +10,7 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, assertBool, assertEqual, assertFailure)
 
 import Echidna.Config (defaultConfig, parseConfig)
+import Echidna.Snapshot (SnapshotMutators(..))
 import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config (EConfigWithUsage(..), EConfig(..), MCPConf(..), MCPTransport(..), defaultMCPConf, validateMCPConf)
 import Echidna.Types.Tx (TxConf(..))
@@ -46,11 +47,14 @@ configTests = testGroup "Configuration tests" $
       assertEqual "default cap" 64 defaultConfig.campaignConf.maxSnapshotsPerSequence
   , testCase "mutationBatchSize defaults to 8" $
       assertEqual "default batch" 8 defaultConfig.campaignConf.mutationBatchSize
+  , testCase "snapshotMutators defaults to original" $
+      defaultConfig.campaignConf.snapshotMutators @?= SnapshotMutatorsOriginal
   , testCase "parse snapshot prefix config" $ do
       let yaml = BS8.pack $ unlines
             [ "snapshotPrefixes: false"
             , "maxSnapshotsPerSequence: 3"
             , "mutationBatchSize: 1"
+            , "snapshotMutators: sticky"
             ]
       case Y.decodeEither' yaml of
         Right (c :: EConfigWithUsage) -> do
@@ -60,6 +64,8 @@ configTests = testGroup "Configuration tests" $
             c.econfig.campaignConf.maxSnapshotsPerSequence
           assertEqual "mutationBatchSize" 1
             c.econfig.campaignConf.mutationBatchSize
+          assertEqual "snapshotMutators" SnapshotMutatorsSticky
+            c.econfig.campaignConf.snapshotMutators
         Left e -> assertFailure $ "unexpected decoding error: " <> show e
   , testCase "parse mcp bounds" $ do
       let yaml = BS8.pack $ unlines

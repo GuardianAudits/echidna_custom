@@ -17,7 +17,13 @@ import EVM.Solvers (Solver(..))
 import EVM.Types (Addr, VM(..), W256)
 
 import Echidna.Mutator.Corpus (defaultMutationConsts)
-import Echidna.Snapshot (defaultMaxSnapshotsPerSequence, defaultMutationBatchSize, defaultSnapshotPrefixes)
+import Echidna.Snapshot
+  ( SnapshotMutators(..)
+  , defaultMaxSnapshotsPerSequence
+  , defaultMutationBatchSize
+  , defaultSnapshotMutators
+  , defaultSnapshotPrefixes
+  )
 import Echidna.Test
 import Echidna.Types.Campaign
 import Echidna.Types.Config
@@ -141,7 +147,14 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "snapshotPrefixes"   ..!= defaultSnapshotPrefixes
         <*> v ..:? "maxSnapshotsPerSequence" ..!= defaultMaxSnapshotsPerSequence
         <*> v ..:? "mutationBatchSize"  ..!= defaultMutationBatchSize
+        <*> snapshotMutatorsParser
         where
+        snapshotMutatorsParser = v ..:? "snapshotMutators" >>= \case
+          Just ("original" :: String) -> pure SnapshotMutatorsOriginal
+          Just "append-only"          -> pure SnapshotMutatorsAppendOnly
+          Just "sticky"               -> pure SnapshotMutatorsSticky
+          Just s                      -> fail $ "Unrecognized snapshotMutators: " <> s
+          Nothing                     -> pure defaultSnapshotMutators
         smtSolver = v ..:? "symExecSMTSolver" >>= \case
           Just ("z3" :: String)  -> pure Z3
           Just "cvc5"            -> pure CVC5

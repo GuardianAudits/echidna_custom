@@ -172,8 +172,8 @@ seqMutatorsStateful (c1, c2, c3, c4) = weighted
    (RandomInterleave,        c4)
  ]
 
--- | Append-only mutators. Prepend/splice/interleave drop the parent prefix, so
--- 'planParent' is Nothing and VM snapshots never run.
+-- | Optional append-only mix. Prepend/splice/interleave stay in the default
+-- mix; they are snapshot-ineligible and run the baseline runner.
 seqMutatorsSnapshot
   :: MonadRandom m
   => MutationConsts Rational

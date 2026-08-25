@@ -22,6 +22,9 @@ module Echidna.Snapshot
   , mergeSnapshotStats
   , parentKey
   , snapshotReuseAllowed
+  , SnapshotMutators(..)
+  , defaultSnapshotMutators
+  , recordIneligible
   , ppSnapshotStats
   ) where
 
@@ -87,15 +90,36 @@ type W256Like = Integer
 
 data SnapshotStats = SnapshotStats
   { snapLookups    :: !Int
+    -- ^ Eligible sequences that entered the snapshot runner.
   , snapHits       :: !Int
   , snapExactHits  :: !Int
   , snapSkipped    :: !Int
+    -- ^ Prefix transactions skipped on a hit.
   , snapGapReplay  :: !Int
   , snapMisses     :: !Int
+  , snapIneligible :: !Int
+    -- ^ Sequences with no snapshot parent (prepend/splice/interleave, empty corpus).
   } deriving (Eq, Show)
 
 emptySnapshotStats :: SnapshotStats
-emptySnapshotStats = SnapshotStats 0 0 0 0 0 0
+emptySnapshotStats = SnapshotStats 0 0 0 0 0 0 0
+
+-- | Prepend/splice/interleave (and empty-parent seqs) run the baseline runner.
+recordIneligible :: SnapshotStats -> SnapshotStats
+recordIneligible stats = stats { snapIneligible = stats.snapIneligible + 1 }
+
+-- | Search policy when snapshots are on. Default keeps Echidna's mutator mix.
+data SnapshotMutators
+  = SnapshotMutatorsOriginal
+    -- ^ Unchanged append/prepend/splice/interleave weights.
+  | SnapshotMutatorsAppendOnly
+    -- ^ Only prefix-preserving append mutations.
+  | SnapshotMutatorsSticky
+    -- ^ @mutationBatchSize - 1@ append siblings, then one unrestricted mutation.
+  deriving (Eq, Show)
+
+defaultSnapshotMutators :: SnapshotMutators
+defaultSnapshotMutators = SnapshotMutatorsOriginal
 
 recordSnapshotStats :: PrefixRestore -> SnapshotStats -> SnapshotStats
 recordSnapshotStats restore stats =
@@ -115,21 +139,22 @@ recordSnapshotStats restore stats =
 
 mergeSnapshotStats :: SnapshotStats -> SnapshotStats -> SnapshotStats
 mergeSnapshotStats a b = SnapshotStats
-  { snapLookups   = a.snapLookups + b.snapLookups
-  , snapHits      = a.snapHits + b.snapHits
-  , snapExactHits = a.snapExactHits + b.snapExactHits
-  , snapSkipped   = a.snapSkipped + b.snapSkipped
-  , snapGapReplay = a.snapGapReplay + b.snapGapReplay
-  , snapMisses    = a.snapMisses + b.snapMisses
+  { snapLookups    = a.snapLookups + b.snapLookups
+  , snapHits       = a.snapHits + b.snapHits
+  , snapExactHits  = a.snapExactHits + b.snapExactHits
+  , snapSkipped    = a.snapSkipped + b.snapSkipped
+  , snapGapReplay  = a.snapGapReplay + b.snapGapReplay
+  , snapMisses     = a.snapMisses + b.snapMisses
+  , snapIneligible = a.snapIneligible + b.snapIneligible
   }
 
 ppSnapshotStats :: SnapshotStats -> String
 ppSnapshotStats s =
-  "snapshots: " <> show s.snapHits <> "/" <> show s.snapLookups
-  <> " hits, skip " <> show s.snapSkipped
-  <> ", gap " <> show s.snapGapReplay
-  <> ", exact " <> show s.snapExactHits
+  "snapshots: eligible " <> show s.snapLookups
+  <> ", hits " <> show s.snapHits
   <> ", miss " <> show s.snapMisses
+  <> ", ineligible " <> show s.snapIneligible
+  <> ", skip " <> show s.snapSkipped
 
 -- | FFI and RPC @latest@ are not replay-stable; refuse cache reuse.
 snapshotReuseAllowed :: Bool -> Bool -> Bool
