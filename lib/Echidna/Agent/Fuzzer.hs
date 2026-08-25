@@ -42,6 +42,7 @@ import Echidna.Mutator.Corpus
   ( getCorpusMutation
   , mutateParent
   , selectFromCorpus
+  , seqMutatorsSnapshot
   , seqMutatorsStateless
   , seqMutatorsStateful
   , fromConsts
@@ -404,13 +405,16 @@ genStandardSeq deployedContracts = do
        -- 3. Standard fuzzing behavior (no prioritized sequence selected)
        -- Generate new random transactions
        randTxs <- replicateM seqLen (genTx world deployedContracts)
-       -- Generate a random mutator
-       cmut <- if seqLen == 1 then seqMutatorsStateless (fromConsts mutConsts)
-                              else seqMutatorsStateful (fromConsts mutConsts)
+       -- Generate a random mutator. Snapshot reuse needs an append-style
+       -- candidate that still shares a prefix with the sticky parent.
+       let useSnaps = campaignConf.snapshotPrefixes && campaignConf.maxSnapshotsPerSequence > 0
+       cmut <- if useSnaps then seqMutatorsSnapshot (fromConsts mutConsts)
+               else if seqLen == 1 then seqMutatorsStateless (fromConsts mutConsts)
+               else seqMutatorsStateful (fromConsts mutConsts)
        corpus <- liftIO $ readIORef env.corpusRef
        if null corpus
          then pure (noPlan randTxs)
-         else if campaignConf.snapshotPrefixes && campaignConf.maxSnapshotsPerSequence > 0
+         else if useSnaps
                 then do
                   parent <- takeStickyParent corpus
                   mutateParent cmut seqLen corpus parent randTxs

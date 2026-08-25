@@ -172,6 +172,21 @@ seqMutatorsStateful (c1, c2, c3, c4) = weighted
    (RandomInterleave,        c4)
  ]
 
+-- | Append-only mutators. Prepend/splice/interleave drop the parent prefix, so
+-- 'planParent' is Nothing and VM snapshots never run.
+seqMutatorsSnapshot
+  :: MonadRandom m
+  => MutationConsts Rational
+  -> m CorpusMutation
+seqMutatorsSnapshot (c1, c2, c3, _) = weighted
+  [(RandomAppend Identity,   800),
+   (RandomAppend Shrinking,  c1),
+   (RandomAppend Mutation,   c2),
+   (RandomAppend Expansion,  c3),
+   (RandomAppend Swapping,   c3),
+   (RandomAppend Deletion,   c3)
+  ]
+
 seqMutatorsStateless
   :: MonadRandom m
   => MutationConsts Rational

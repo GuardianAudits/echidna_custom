@@ -1,7 +1,9 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Tests.Snapshot (snapshotTests) where
 
+import Control.Monad (replicateM)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Random.Strict (evalRandT)
 import Control.Monad.Reader (runReaderT)
@@ -21,7 +23,12 @@ import EVM.Solidity (BuildOutput(..), Contracts(..), SolcContract(..))
 import EVM.Types hiding (Env)
 
 import Echidna.Agent.Fuzzer (takeStickyParent)
-import Echidna.Mutator.Corpus (appendFromParent)
+import Echidna.Mutator.Corpus
+  ( CorpusMutation(..)
+  , appendFromParent
+  , prependFromParent
+  , seqMutatorsSnapshot
+  )
 import Echidna.Config (defaultConfig)
 import Echidna.Exec (execTx, initialVM)
 import Echidna.Execution (callseqPlan, evalSeqPlan)
@@ -70,6 +77,16 @@ helperTests = testGroup "helpers"
       plan <- flip evalRandT (mkStdGen 0) $
         appendFromParent (\_ -> pure [extra]) 5 [] gtxs
       plan.planCandidate @?= [extra, mkNoCall 1, mkNoCall 2]
+  , testCase "prepend-style mutation has no snapshot parent" $ do
+      let parent = mkSeq 8
+      plan <- flip evalRandT (mkStdGen 0) $
+        prependFromParent return 10 parent [mkNoCall 99]
+      plan.planParent @?= Nothing
+  , testCase "seqMutatorsSnapshot only produces RandomAppend" $ do
+      muts <- flip evalRandT (mkStdGen 1) $
+        replicateM 40 (seqMutatorsSnapshot (1, 1, 1, 1))
+      assertBool "prepend/splice/interleave must not appear" $
+        all (\case RandomAppend _ -> True; _ -> False) muts
   ]
 
 configParseTests :: TestTree

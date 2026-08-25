@@ -466,9 +466,7 @@ statusLine env states lastUpdateRef = do
             "W" <> show wid <> ":" <> show step <> "/" <> show shrinkLimit <> "(" <> show seqLength <> ")"
 
   let snap = foldl mergeSnapshotStats emptySnapshotStats ((.snapshotStats) <$> states)
-      snapPart
-        | snap.snapLookups == 0 = ""
-        | otherwise = ", " <> ppSnapshotStats snap
+      snapPart = ", " <> ppSnapshotStats snap
   pure $ "tests: " <> show (length $ filter didFail tests) <> "/" <> show (length tests)
     <> ", fuzzing: " <> show totalCalls <> "/" <> show env.cfg.campaignConf.testLimit
     <> ", values: " <> show ((.value) <$> filter isOptimizationTest tests)
