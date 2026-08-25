@@ -24,6 +24,7 @@ module Echidna.Snapshot
   , mergeSnapshotStats
   , parentKey
   , snapshotReuseAllowed
+  , snapshotSkipReason
   , SnapshotMutators(..)
   , defaultSnapshotMutators
   , recordIneligible
@@ -204,6 +205,15 @@ ppSnapshotStats s =
 -- | FFI and RPC @latest@ are not replay-stable; refuse cache reuse.
 snapshotReuseAllowed :: Bool -> Bool -> Bool
 snapshotReuseAllowed allowFFI rpcLatest = not allowFFI && not rpcLatest
+
+-- | Why 'evalSeqPlan' will not use the snapshot runner. 'Nothing' means use it.
+snapshotSkipReason :: Bool -> Bool -> Bool -> Bool -> Maybe String
+snapshotSkipReason enabled allowFFI rpcLatest hasParent
+  | enabled && snapshotReuseAllowed allowFFI rpcLatest && hasParent = Nothing
+  | not enabled = Just "disabled"
+  | allowFFI = Just "ffi"
+  | rpcLatest = Just "rpc-latest"
+  | otherwise = Just "no-parent"
 
 -- | Restore parent-sequence VMs at the mutation index. Disable with
 -- @snapshotPrefixes: false@.

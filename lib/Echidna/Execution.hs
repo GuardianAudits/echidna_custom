@@ -302,12 +302,25 @@ evalSeqPlan publishState vm0 execFunc plan = do
   let enabled = conf.snapshotPrefixes && conf.maxSnapshotsPerSequence > 0
       rpcLatest = isJust env.cfg.rpcUrl && isNothing env.cfg.rpcBlock
       allowed = snapshotReuseAllowed env.cfg.solConf.allowFFI rpcLatest
+      hasParent = isJust plan.planParent
   if enabled && allowed
     then do
-      when (isNothing plan.planParent) $
+      when (not hasParent) $ do
+        logMsg $ "snapshot skip: no-parent"
+          <> " enabled=" <> show enabled
+          <> " allowFFI=" <> show env.cfg.solConf.allowFFI
+          <> " rpcLatest=" <> show rpcLatest
+          <> " candLen=" <> show (length plan.planCandidate)
         modify' $ \ws -> ws { snapshotStats = recordIneligible ws.snapshotStats }
       evalSeqSnap publishState vm0 execFunc plan
     else do
+      logMsg $ "snapshot skip: "
+        <> fromMaybe "disabled" (snapshotSkipReason enabled env.cfg.solConf.allowFFI rpcLatest hasParent)
+        <> " enabled=" <> show enabled
+        <> " allowFFI=" <> show env.cfg.solConf.allowFFI
+        <> " rpcLatest=" <> show rpcLatest
+        <> " parent=" <> show hasParent
+        <> " candLen=" <> show (length plan.planCandidate)
       modify' $ \ws -> ws
         { lastSeqSkipped = 0
         , prefixSnapshots = ws.prefixSnapshots { lastCollected = IntMap.empty }
@@ -376,6 +389,16 @@ evalSeqSnap publishState vm0 execFunc plan = do
               (lookupParentSnaps cache p vm0)
           _ -> IntMap.empty
       prefixResults = [ (tx, skippedPrefixResult) | tx <- skipped ]
+  logMsg $ "snapshot seq"
+    <> " parent=" <> maybe "none" (show . parentKey) plan.planParent
+    <> " parentLen=" <> show parentLen
+    <> " candLen=" <> show seqLen
+    <> " lcp=" <> show restore.restoreLen
+    <> " from=" <> show skipN
+    <> " exact=" <> show restore.restoreExact
+    <> " cache=" <> show (IntMap.size cache.snapshots)
+    <> " cachedParent=" <> maybe "none" show cache.cachedParentKey
+    <> " collected=" <> show (IntMap.size cache.lastCollected)
   (suffixResults, vm', eventDiffs, snaps') <-
     go keepSet restore.restoreVM (reverse skipped) Map.empty snaps0 skipN remainingTxs0
   modify' $ \ws ->

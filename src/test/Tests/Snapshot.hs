@@ -55,6 +55,13 @@ helperTests = testGroup "helpers"
       firstDiffIndex [1, 2, 3 :: Int] [1, 2, 3] @?= 3
   , testCase "firstDiffIndex reports the first changed index" $
       firstDiffIndex [1, 2, 3, 4, 5 :: Int] [1, 2, 3, 9, 5] @?= 3
+  , testCase "snapshotSkipReason is Nothing when reuse is allowed with a parent" $
+      snapshotSkipReason True False False True @?= Nothing
+  , testCase "snapshotSkipReason prefers disabled then ffi then rpc-latest then no-parent" $ do
+      snapshotSkipReason False False False True @?= Just "disabled"
+      snapshotSkipReason True True False True @?= Just "ffi"
+      snapshotSkipReason True False True True @?= Just "rpc-latest"
+      snapshotSkipReason True False False False @?= Just "no-parent"
   , testCase "firstDiffIndex of a prepend-style change is 0" $
       firstDiffIndex [1, 2, 3 :: Int] [9, 1, 2, 3] @?= 0
   , testCase "firstDiffIndex of an appended suffix is the original length" $

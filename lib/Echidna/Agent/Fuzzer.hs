@@ -21,6 +21,7 @@ import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.IORef (IORef, writeIORef, readIORef, atomicModifyIORef')
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -52,6 +53,7 @@ import Echidna.Snapshot
   ( MutationPlan(..)
   , SnapshotMutators(..)
   , noPlan
+  , snapshotReuseAllowed
   )
 import Echidna.Transaction (genTx, genTxFromPrototype)
 import Echidna.Types.Random (rElem)
@@ -108,7 +110,7 @@ instance Agent FuzzerAgent where
     (reason, _) <- flip evalRandT (mkStdGen effectiveSeed) $
            flip runReaderT env $
              flip runStateT initialState $ do
-               liftIO $ pushCampaignEvent env (WorkerEvent workerId FuzzWorker (Worker.Log ("Starting FuzzerAgent " ++ show workerId)))
+               liftIO $ pushCampaignEvent env (WorkerEvent workerId FuzzWorker (Worker.Log (snapshotStartLog workerId env)))
                callback
                void $ replayCorpus callback vm corpus
                unless (null corpus) $
@@ -435,15 +437,20 @@ genStandardSeq deployedContracts = do
 -- | Reuse one in-memory parent for campaignConf.mutationBatchSize mutations.
 -- Corpus is append-only during a short batch, so we do not rescan it.
 takeStickyParent
-  :: (MonadRandom m, MonadReader Env m, MonadState WorkerState m)
+  :: (MonadRandom m, MonadReader Env m, MonadState WorkerState m, MonadIO m)
   => Corpus
   -> m [Tx]
 takeStickyParent corpus = do
   batchSize <- asks (.cfg.campaignConf.mutationBatchSize)
+  env <- ask
+  wid <- gets (.workerId)
   ws <- get
   case (ws.mutationBatchParent, ws.mutationBatchLeft) of
     (Just p, n) | n > 0 -> do
       modify' $ \s -> s { mutationBatchLeft = n - 1 }
+      liftIO $ pushCampaignEvent env (WorkerEvent wid FuzzWorker
+        (Worker.Log ("snapshot sticky reuse parentLen=" ++ show (length p)
+                     ++ " left=" ++ show (n - 1))))
       pure p
     _ -> do
       p <- selectFromCorpus corpus
@@ -451,4 +458,20 @@ takeStickyParent corpus = do
         { mutationBatchParent = Just p
         , mutationBatchLeft = max 1 batchSize - 1
         }
+      liftIO $ pushCampaignEvent env (WorkerEvent wid FuzzWorker
+        (Worker.Log ("snapshot sticky new parentLen=" ++ show (length p)
+                     ++ " batch=" ++ show batchSize)))
       pure p
+
+snapshotStartLog :: Int -> Env -> String
+snapshotStartLog workerId env =
+  let cc = env.cfg.campaignConf
+      rpcLatest = isJust env.cfg.rpcUrl && isNothing env.cfg.rpcBlock
+      allowed = snapshotReuseAllowed env.cfg.solConf.allowFFI rpcLatest
+  in "Starting FuzzerAgent " ++ show workerId
+       ++ " snapshots enabled=" ++ show cc.snapshotPrefixes
+       ++ " cap=" ++ show cc.maxSnapshotsPerSequence
+       ++ " batch=" ++ show cc.mutationBatchSize
+       ++ " allowFFI=" ++ show env.cfg.solConf.allowFFI
+       ++ " rpcLatest=" ++ show rpcLatest
+       ++ " reuseAllowed=" ++ show allowed
