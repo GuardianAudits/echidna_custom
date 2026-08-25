@@ -63,6 +63,7 @@ import Echidna.Types.Campaign (WorkerState(..), CampaignConf(..), emptySampleSta
 import Echidna.Types.Config (Env(..), EConfig(..), markInitialCorpusReplayWorkerComplete)
 import Echidna.Types.Corpus (Corpus)
 import Echidna.Types.InterWorker (AgentId(..), Bus, WrappedMessage(..), Message(..), FuzzerCmd(..))
+import Echidna.Types.Solidity (SolConf(..))
 import Echidna.Types.Test (EchidnaTest(..), TestState(..), TestType(..), isOpen, isOptimizationTest)
 import Echidna.Types.Tx (Tx, TxResult(..), getResult)
 import Echidna.Types.Worker (WorkerEvent(..), WorkerType(..), CampaignEvent(..), WorkerStopReason(..))
