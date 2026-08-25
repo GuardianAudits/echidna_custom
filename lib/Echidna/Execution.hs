@@ -20,7 +20,7 @@ import Data.List qualified as List
 import Data.Map (Map, (\\))
 import Data.Map qualified as Map
 import Data.Map.Strict qualified as MapStrict
-import Data.Maybe (isJust, isNothing, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Vector qualified as V
@@ -148,6 +148,13 @@ callseqPlan publishState vm plan isReplaying = do
     -- Broadcast new coverage to other agents (e.g. Symbolic)
     workerId <- gets (.workerId)
     liftIO $ atomically $ writeTChan env.bus (WrappedMessage (FuzzerId workerId) (Broadcast (NewCoverageInfo points (fst <$> results) isReplaying)))
+    -- Snapshot the sequence that entered the corpus so selecting it later
+    -- is a hit, not a cache-building miss.
+    collected <- gets (.prefixSnapshots.lastCollected)
+    unless (IntMap.null collected) $
+      modify' $ \ws ->
+        ws { prefixSnapshots =
+               seedParentCache ws.prefixSnapshots (fst <$> results) vm0 collected }
 
   modify' $ \workerState ->
 
@@ -295,14 +302,16 @@ evalSeqPlan publishState vm0 execFunc plan = do
   let enabled = conf.snapshotPrefixes && conf.maxSnapshotsPerSequence > 0
       rpcLatest = isJust env.cfg.rpcUrl && isNothing env.cfg.rpcBlock
       allowed = snapshotReuseAllowed env.cfg.solConf.allowFFI rpcLatest
-  if enabled && allowed && isJust plan.planParent
-    then evalSeqSnap publishState vm0 execFunc plan
-    else do
-      -- Prepend/splice/interleave (no parent prefix) still run; they must
-      -- not drop the sticky-parent VM cache.
-      when (enabled && allowed && isNothing plan.planParent) $
+  if enabled && allowed
+    then do
+      when (isNothing plan.planParent) $
         modify' $ \ws -> ws { snapshotStats = recordIneligible ws.snapshotStats }
-      modify' $ \ws -> ws { lastSeqSkipped = 0 }
+      evalSeqSnap publishState vm0 execFunc plan
+    else do
+      modify' $ \ws -> ws
+        { lastSeqSkipped = 0
+        , prefixSnapshots = ws.prefixSnapshots { lastCollected = IntMap.empty }
+        }
       evalSeqBaseline publishState vm0 execFunc plan.planCandidate
 
 -- | Original pre-snapshot runner: no IntMap, no snapshot retention.
@@ -358,26 +367,24 @@ evalSeqSnap publishState vm0 execFunc plan = do
     skipN = restore.restoreFrom
     skipped = take skipN txSeq
     remainingTxs0 = drop skipN txSeq
-    switchingParent =
-      restore.restoreFrom == 0 &&
+  -- Do not wipe parked corpus-parent VMs on a parent switch; seedParentCache
+  -- keeps one extra parent so a sequence that entered the corpus can hit later.
+  let snaps0 =
         case plan.planParent of
-          Just p -> cache.cachedParentKey /= Just (parentKey p)
-                    && not (IntMap.null cache.snapshots)
-          Nothing -> False
-  -- Drop the previous parent's VMs before allocating a new set so peak
-  -- retention is one cache, not two.
-  when switchingParent $
-    modify' $ \ws -> ws { prefixSnapshots = emptyPrefixSnapshotCache }
-  cache' <- gets (.prefixSnapshots)
-  let snaps0 = IntMap.filterWithKey (\k _ -> k <= skipN) cache'.snapshots
+          Just p | skipN > 0 ->
+            maybe IntMap.empty (IntMap.filterWithKey (\k _ -> k <= skipN))
+              (lookupParentSnaps cache p vm0)
+          _ -> IntMap.empty
       prefixResults = [ (tx, skippedPrefixResult) | tx <- skipped ]
   (suffixResults, vm', eventDiffs, snaps') <-
     go keepSet restore.restoreVM (reverse skipped) Map.empty snaps0 skipN remainingTxs0
   modify' $ \ws ->
-    let wsStats = ws
-          { snapshotStats = recordSnapshotStats restore ws.snapshotStats
-          , lastSeqSkipped = skipN
-          }
+    let cache' = ws.prefixSnapshots { lastCollected = snaps' }
+        wsCol = ws { prefixSnapshots = cache', lastSeqSkipped = skipN }
+        wsStats
+          | isJust plan.planParent =
+              wsCol { snapshotStats = recordSnapshotStats restore ws.snapshotStats }
+          | otherwise = wsCol
     in case plan.planParent of
          Nothing -> wsStats
          Just parent ->
@@ -402,7 +409,7 @@ evalSeqSnap publishState vm0 execFunc plan = do
           !eventDiffs' = force $ Map.unionWith Set.union txEventDiffs eventDiffs
           idx' = idx + 1
         snaps' <-
-          if isJust plan.planParent && IntSet.member idx' keepSet
+          if IntSet.member idx' keepSet
             then do
               snap <- mkPrefixSnapshot vm'
               pure $ IntMap.insert idx' snap snaps
@@ -420,18 +427,8 @@ updateParentCache
   -> IntMap.IntMap (VM Concrete)
   -> PrefixSnapshotCache
 updateParentCache cache parent vm0 snapsKept =
-  let fp = Just (vmFingerprint vm0)
-      key = parentKey parent
-      sameWorld =
-        cache.cachedParentKey == Just key
-        && fingerprintsMatch cache.snapFingerprint vm0
-  in if sameWorld
-       then PrefixSnapshotCache
-              { cachedParentKey = Just key
-              , snapshots = IntMap.union cache.snapshots snapsKept
-              , snapFingerprint = cache.snapFingerprint
-              }
-       else PrefixSnapshotCache (Just key) snapsKept fp
+  let existing = fromMaybe IntMap.empty (lookupParentSnaps cache parent vm0)
+  in seedParentCache cache parent vm0 (IntMap.union existing snapsKept)
 
 -- | Update tests based on the return value from the given function.
 -- Nothing skips the update.

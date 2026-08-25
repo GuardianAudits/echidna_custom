@@ -145,16 +145,46 @@ evalSeqTests = testGroup "evalSeq restore"
       (n2, _, _, _) <- runCounted (snapCfg True 64) ws2 vm0 (sibPlan parent sib2)
       n1 @?= 3
       n2 @?= 2
-  , testCase "different parent misses" $ do
+  , testCase "previous corpus parent stays cached" $ do
       vm0 <- stToIO $ initialVM False
       let parentA = mkSeq 10
           parentB = map (mkNoCall . (+ 100) . fromIntegral) [1 .. 10 :: Int]
           mutatedA = mutateAt 7 parentA
       (_, _, _, ws1) <- runCounted (snapCfg True 64) initialWorkerState vm0 (seedPlan parentA)
       (_, _, _, ws2) <- runCounted (snapCfg True 64) ws1 vm0 (seedPlan parentB)
-      (n, _, _, _) <-
+      (n, _, _, ws3) <-
         runCounted (snapCfg True 64) ws2 vm0 (sibPlan parentA mutatedA)
+      n @?= 3
+      assertBool "saved parent is a hit" $ ws3.snapshotStats.snapHits >= 1
+  , testCase "third parent evicts the oldest saved cache" $ do
+      vm0 <- stToIO $ initialVM False
+      let parentA = mkSeq 10
+          parentB = map (mkNoCall . (+ 100) . fromIntegral) [1 .. 10 :: Int]
+          parentC = map (mkNoCall . (+ 200) . fromIntegral) [1 .. 10 :: Int]
+          mutatedA = mutateAt 7 parentA
+      (_, _, _, wsA) <- runCounted (snapCfg True 64) initialWorkerState vm0 (seedPlan parentA)
+      (_, _, _, wsB) <- runCounted (snapCfg True 64) wsA vm0 (seedPlan parentB)
+      (_, _, _, wsC) <- runCounted (snapCfg True 64) wsB vm0 (seedPlan parentC)
+      (n, _, _, _) <-
+        runCounted (snapCfg True 64) wsC vm0 (sibPlan parentA mutatedA)
       n @?= 10
+  , testCase "collected no-parent seq can seed a later hit" $ do
+      vm0 <- stToIO $ initialVM False
+      let parent = mkSeq 10
+          mutated = mutateAt 7 parent
+      (_, _, _, ws1) <- runCounted (snapCfg True 64) initialWorkerState vm0 (noPlan parent)
+      assertBool "ineligible seq still collected prefix VMs" $
+        not (IntMap.null ws1.prefixSnapshots.lastCollected)
+      ws1.prefixSnapshots.cachedParentKey @?= Nothing
+      let seeded = ws1
+            { prefixSnapshots =
+                seedParentCache ws1.prefixSnapshots parent vm0
+                  ws1.prefixSnapshots.lastCollected
+            }
+      (n, _, _, ws2) <-
+        runCounted (snapCfg True 64) seeded vm0 (sibPlan parent mutated)
+      n @?= 3
+      assertBool "seeded corpus seq is a hit" $ ws2.snapshotStats.snapHits >= 1
   , testCase "restored suffix matches full replay" $ do
       vm0 <- stToIO $ initialVM False
       let parent = mkSeq 10

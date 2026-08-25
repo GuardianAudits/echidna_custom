@@ -15,6 +15,8 @@ module Echidna.Snapshot
   , mkPrefixSnapshot
   , vmFingerprint
   , fingerprintsMatch
+  , seedParentCache
+  , lookupParentSnaps
   , defaultSnapshotPrefixes
   , defaultMaxSnapshotsPerSequence
   , defaultMutationBatchSize
@@ -60,19 +62,62 @@ noPlan txs = MutationPlan Nothing txs
 parentKey :: [Tx] -> Int
 parentKey = hash
 
--- | Worker-local cache keyed by 'parentKey', not the raw transaction list.
+-- | Worker-local caches keyed by 'parentKey'. The active slot is the parent
+-- we last wrote; 'savedParents' holds at most one extra parent so a sequence
+-- that just entered the corpus can be selected later without a miss.
 data PrefixSnapshotCache = PrefixSnapshotCache
   { cachedParentKey :: !(Maybe Int)
-    -- ^ 'parentKey' of the corpus parent stored in 'snapshots'.
   , snapshots       :: !(IntMap (VM Concrete))
-    -- ^ Bounded map: prefix length → continuation VM after that many parent txs.
   , snapFingerprint :: !(Maybe VmFingerprint)
-    -- ^ Starting-VM identity required for reuse.
+  , savedParents    :: !(IntMap (VmFingerprint, IntMap (VM Concrete)))
+  , lastCollected   :: !(IntMap (VM Concrete))
+    -- ^ Prefix VMs from the sequence that just ran, used to seed a corpus entry.
   }
 
 emptyPrefixSnapshotCache :: PrefixSnapshotCache
 emptyPrefixSnapshotCache =
-  PrefixSnapshotCache Nothing IntMap.empty Nothing
+  PrefixSnapshotCache Nothing IntMap.empty Nothing IntMap.empty IntMap.empty
+
+lookupParentSnaps
+  :: PrefixSnapshotCache
+  -> [Tx]
+  -> VM Concrete
+  -> Maybe (IntMap (VM Concrete))
+lookupParentSnaps cache parent vm0 =
+  let key = parentKey parent
+  in if cache.cachedParentKey == Just key && fingerprintsMatch cache.snapFingerprint vm0
+       then Just cache.snapshots
+       else case IntMap.lookup key cache.savedParents of
+         Just (fp, snaps) | fingerprintsMatch (Just fp) vm0 -> Just snaps
+         _ -> Nothing
+
+-- | Install 'snaps' as the active cache for 'txs'. Parks the previous active
+-- parent instead of dropping it, so an ineligible seq does not have to be
+-- the one that wipes the cache (callers skip this on ineligible).
+seedParentCache
+  :: PrefixSnapshotCache
+  -> [Tx]
+  -> VM Concrete
+  -> IntMap (VM Concrete)
+  -> PrefixSnapshotCache
+seedParentCache cache txs vm0 snaps
+  | IntMap.null snaps = cache { lastCollected = snaps }
+  | otherwise =
+      let key = parentKey txs
+          fp = vmFingerprint vm0
+          parked =
+            case (cache.cachedParentKey, cache.snapFingerprint) of
+              (Just k, Just pfp)
+                | k /= key && not (IntMap.null cache.snapshots) ->
+                    IntMap.singleton k (pfp, cache.snapshots)
+              _ -> IntMap.delete key cache.savedParents
+      in PrefixSnapshotCache
+           { cachedParentKey = Just key
+           , snapshots = snaps
+           , snapFingerprint = Just fp
+           , savedParents = parked
+           , lastCollected = snaps
+           }
 
 data VmFingerprint = VmFingerprint
   { fpBlock        :: !W256Like
@@ -219,10 +264,9 @@ restorePrefix cache initialVM plan =
   case plan.planParent of
     Just parent
       | not (null parent)
-      , cache.cachedParentKey == Just (parentKey parent)
-      , fingerprintsMatch cache.snapFingerprint initialVM ->
+      , Just snaps <- lookupParentSnaps cache parent initialVM ->
           let k = firstDiffIndex parent plan.planCandidate
-          in case nearestPrefix cache.snapshots k of
+          in case nearestPrefix snaps k of
                Just (j, vm) ->
                  PrefixRestore k j vm (j == k)
                Nothing -> PrefixRestore 0 0 initialVM False
