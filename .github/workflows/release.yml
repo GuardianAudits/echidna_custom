@@ -38,10 +38,12 @@ jobs:
             name: macOS (x86_64)
             tuple: x86_64-macos
             system: x86_64-darwin
+            timeout: 240
           - os: macos-14
             name: macOS (aarch64)
             tuple: aarch64-macos
             system: aarch64-darwin
+            timeout: 240
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
