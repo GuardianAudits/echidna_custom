@@ -31,4 +31,8 @@ cheatTests =
     , testContract' "cheat/invalidUtf8String.sol" (Just "TestInvalidUtf8String") (Just (> solcV (0,8,0))) (Just "cheat/invalidUtf8String.yaml") False FuzzWorker
         [ ("echidna_invalid_utf8_cheatcode_string_is_escaped failed", passed "echidna_invalid_utf8_cheatcode_string_is_escaped")
         ]
+    , testContract' "cheat/recordReset.sol" (Just "TestRecordReset") (Just (> solcV (0,8,0))) (Just "cheat/recordReset.yaml") False FuzzWorker
+        [ ("recordingEndsWithTx failed", passed "recordingEndsWithTx")
+        , ("recordWithinTx failed",      passed "recordWithinTx")
+        ]
     ]
