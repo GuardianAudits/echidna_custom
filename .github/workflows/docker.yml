@@ -147,14 +147,16 @@ jobs:
       - name: Create manifest list and push (Ubuntu & NVM variant)
         working-directory: ${{ runner.temp }}/digests/ubuntu
         run: |
+          image_name=$(printf '%s' "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf "$IMAGE_NAME@sha256:%s " *)
+            $(printf "$image_name@sha256:%s " *)
         env:
           IMAGE_NAME: ghcr.io/${{ github.repository }}/echidna
 
       - name: Inspect image (Ubuntu & NVM variant)
         run: |
-          docker buildx imagetools inspect "$IMAGE_NAME:$VERSION"
+          image_name=$(printf '%s' "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
+          docker buildx imagetools inspect "$image_name:$VERSION"
         env:
           IMAGE_NAME: "ghcr.io/${{ github.repository }}/echidna"
           VERSION: "${{ steps.meta-ubuntu.outputs.version }}"
