@@ -235,7 +235,16 @@ setupTx tx@Tx{call} = fromEVM $ do
                  , callvalue = Lit tx.value
                  }
     , block = advanceBlock vm.block tx.delay
-    , tx = vm.tx { gasprice = tx.gasprice, origin = LitAddr tx.src, subState = subState vm }
+    -- vm.record() state lives in TxState so reverted frames keep it, but it must
+    -- still end with the transaction; otherwise a record() during setup keeps
+    -- every later SLOAD/SSTORE of the campaign in memory.
+    , tx = vm.tx { gasprice = tx.gasprice
+                 , origin = LitAddr tx.src
+                 , subState = subState vm
+                 , recordingStorageAccesses = False
+                 , recordedStorageReads = []
+                 , recordedStorageWrites = []
+                 }
     }
   when isCreate $ do
     #env % #contracts % at (LitAddr tx.dst) .=
