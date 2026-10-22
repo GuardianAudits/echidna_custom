@@ -7,7 +7,9 @@ RUN apk upgrade --no-cache &&\
         automake \
         binutils-gold \
         cmake \
-        libtool
+        git \
+        libtool \
+        patch
 
 RUN mkdir -p /etc/stack &&\
     { echo "system-ghc: true" ;\
@@ -20,6 +22,7 @@ COPY . /echidna/
 WORKDIR /echidna
 RUN .github/scripts/install-libsecp256k1.sh
 RUN .github/scripts/install-libff.sh
+RUN .github/scripts/apply-hevm-patches.sh
 RUN stack upgrade && stack setup && stack install --flag echidna:static --extra-include-dirs=/usr/local/include --extra-lib-dirs=/usr/local/lib
 
 
