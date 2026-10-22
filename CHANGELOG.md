@@ -1,3 +1,7 @@
+## 4.4.1
+
+* `echidna --version` and the UI title report 4.4.1.
+
 ## Unreleased
 
 * The reason a test failed (e.g. revert, returned false) is now shown consistently in the text, JSON and UI outputs, including when no transactions are required to reproduce the failure (#1476)
