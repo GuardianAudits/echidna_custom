@@ -1,31 +1,28 @@
 module Echidna.Solidity where
 
-import Control.Monad (forM, forM_, guard, unless, when)
+import Control.Monad (when, unless, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Catch (MonadThrow(..))
-import Control.Monad.Extra (firstJustM, whenM)
+import Control.Monad.Extra (whenM)
 import Control.Monad.Reader (ReaderT(runReaderT))
 import Control.Monad.ST (stToIO)
 import Control.Monad.State (runStateT)
-import Data.Aeson (FromJSON(..), Value, eitherDecodeFileStrict, withObject, (.:))
-import Data.Aeson.Types (Parser)
 import Data.ByteString qualified as BS
 import Data.Foldable (toList)
-import Data.List (find, mapAccumL, partition, isSuffixOf, sort, sortOn, (\\))
+import Data.List (find, mapAccumL, partition, isSuffixOf, sort, (\\))
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.List.NonEmpty qualified as NE
 import Data.List.NonEmpty.Extra qualified as NEE
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (isJust, isNothing, catMaybes, listToMaybe, mapMaybe)
-import Data.Ord (Down(..))
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text, isPrefixOf, isSuffixOf, append)
 import Data.Text qualified as T
 import Optics.Core hiding (filtered)
 import System.Directory
-  (doesDirectoryExist, doesFileExist, findExecutable, getModificationTime, listDirectory, removeFile)
+  (doesDirectoryExist, doesFileExist, findExecutable, listDirectory, removeFile)
 import System.Exit (ExitCode(..))
 import System.FilePath (joinPath, splitDirectories, (</>))
 import System.FilePath.Posix qualified as FPP
@@ -61,20 +58,15 @@ import Echidna.Utility (applyAnsiColor, measureIO)
 
 -- | Read the crytic-compile exports in a directory, one per compilation unit.
 --
--- A source map names a file by the id its compiler gave it, but a combined
--- JSON only lists the files, and hevm numbers them by their position in that
--- list. That matches solc, not Solar, which numbers a unit's files in another
--- order. When the unit's Foundry build-info is in the given directory, its ids
--- are used instead. Each unit then gets its own id range: every unit numbers
--- its files from 0, so merging them would map one unit's ids to another
--- unit's files.
-readSolcBatch :: FilePath -> FilePath -> IO [BuildOutput]
-readSolcBatch buildInfoDir d = do
+-- hevm numbers a unit's files by their position in its sourceList, which
+-- crytic-compile (0.4.0 and later) writes in the compiler's id order, so the
+-- ids match the unit's source maps for solc and Solar alike. But every unit
+-- numbers its files from 0, so each one gets its own id range: merging them
+-- as they are would map one unit's ids to another unit's files.
+readSolcBatch :: FilePath -> IO [BuildOutput]
+readSolcBatch d = do
   fs <- sort . filter (".json" `Data.List.isSuffixOf`) <$> listDirectory d
-  units <- forM fs $ \f -> do
-    buildOutput <- parseOne f
-    compilerIds <- findCompilerIds buildInfoDir f buildOutput
-    pure $ maybe buildOutput (`useCompilerIds` buildOutput) compilerIds
+  units <- mapM parseOne fs
   pure $ snd $ mapAccumL separateUnit 0 units
   where
   parseOne f =
@@ -82,57 +74,6 @@ readSolcBatch buildInfoDir d = do
       Right buildOutput -> pure buildOutput
       Left e ->
         error $ "Failed to parse combined JSON file " <> (d </> f) <> "\n" <> e
-
--- | The source ids in a Foundry build-info file, keyed by path.
-newtype BuildInfoSourceIds = BuildInfoSourceIds (Map FilePath Int)
-
-instance FromJSON BuildInfoSourceIds where
-  parseJSON = withObject "build-info" $ \o -> do
-    output <- o .: "output"
-    sources <- output .: "sources" :: Parser (Map FilePath Value)
-    BuildInfoSourceIds <$> traverse (withObject "source" (.: "id")) sources
-
-readBuildInfoSourceIds :: FilePath -> IO (Maybe (Map FilePath Int))
-readBuildInfoSourceIds path = do
-  exists <- doesFileExist path
-  if not exists then pure Nothing else
-    either (const Nothing) (\(BuildInfoSourceIds ids) -> Just ids) <$> eitherDecodeFileStrict path
-
--- | The ids the compiler gave a unit's files, keyed by the ids hevm gave them.
--- They come from the unit's build-info: the file with the export's name, or
--- else the newest one that lists exactly the unit's files.
-findCompilerIds :: FilePath -> FilePath -> BuildOutput -> IO (Maybe (Map Int Int))
-findCompilerIds buildInfoDir exportFile buildOutput = do
-  exists <- doesDirectoryExist buildInfoDir
-  if not exists then pure Nothing else do
-    named <- readBuildInfoSourceIds (buildInfoDir </> exportFile)
-    case named >>= idsFor of
-      Just ids -> pure (Just ids)
-      Nothing -> do
-        candidates <- filter (".json" `Data.List.isSuffixOf`) <$> listDirectory buildInfoDir
-        newestFirst <- map fst . sortOn (Down . snd) <$>
-          mapM (\f -> (f,) <$> getModificationTime (buildInfoDir </> f)) candidates
-        firstJustM (fmap (>>= idsFor) . readBuildInfoSourceIds . (buildInfoDir </>)) newestFirst
-  where
-  files = Map.toList buildOutput.sources.files
-  idsFor compilerIds = do
-    guard (Map.size compilerIds == length files)
-    Map.fromList <$> forM files (\(i, (path, _)) -> (i,) <$> lookupPathSuffix compilerIds path)
-
--- | Build-info paths are relative to the project root, while crytic-compile's
--- can be absolute: match the longest trailing part of the path.
-lookupPathSuffix :: Map FilePath a -> FilePath -> Maybe a
-lookupPathSuffix m path = listToMaybe $ mapMaybe (`Map.lookup` m) suffixes
-  where
-  parts = splitDirectories path
-  suffixes = [FPP.joinPath (drop n parts) | n <- [0 .. length parts - 1]]
-
--- | Re-key a unit's source files by their compiler ids. Its source maps
--- already use those ids.
-useCompilerIds :: Map Int Int -> BuildOutput -> BuildOutput
-useCompilerIds ids (BuildOutput contracts sources) =
-  BuildOutput contracts $ sources & #files %~ rekey & #lines %~ rekey
-  where rekey = Map.mapKeys (\i -> Map.findWithDefault i i ids)
 
 -- | Move a unit's file ids up by the given base, in its source files and in
 -- every source map, and return the base for the next unit.
@@ -178,7 +119,7 @@ compileContracts solConf fp = do
         readCreateProcessWithExitCode
           (proc path $ (solConf.cryticArgs ++ solargs) |> x) {std_err = stderr} ""
       case ec of
-        ExitSuccess -> mconcat <$> readSolcBatch (foundryBuildInfoDir solConf.cryticArgs) "crytic-export"
+        ExitSuccess -> mconcat <$> readSolcBatch "crytic-export"
         ExitFailure _ -> throwM $ CompileFailure out err
 
     -- | OS-specific path to the "null" file, which accepts writes without storing them
@@ -187,15 +128,6 @@ compileContracts solConf fp = do
   -- clean up previous artifact files
   removeJsonFiles "crytic-export"
   mconcat . NE.toList <$> mapM compileOne fp
-
--- | Where a Foundry build run by crytic-compile leaves its build-info files.
-foundryBuildInfoDir :: [String] -> FilePath
-foundryBuildInfoDir args = outDir </> "build-info"
-  where
-  outDir = case args of
-    _ | (_ : dir : _) <- dropWhile (/= "--foundry-out-directory") args -> dir
-    _ | Just dir <- listToMaybe (mapMaybe (T.stripPrefix "--foundry-out-directory=" . T.pack) args) -> T.unpack dir
-    _ -> "out"
 
 removeJsonFiles :: FilePath -> IO ()
 removeJsonFiles dir =

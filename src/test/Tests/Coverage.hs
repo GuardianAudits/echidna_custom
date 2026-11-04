@@ -34,9 +34,10 @@ coverageTests = testGroup "Coverage tests"
       [ ("uses corpusDir for coverage",           checkCoverageUsesCorpusDir "test-corpus")]
 
   -- Solar numbers the files of solar-ids in reverse (Zlib 0, Alpha 1, Main 2),
-  -- and the second unit's B.sol is also file 0 of its own unit.
+  -- and crytic-compile lists them in that order. The second unit's B.sol is
+  -- also file 0 of its own unit.
   , testCase "coverage/solar-ids" $ do
-      buildOutput <- mconcat <$> readSolcBatch "coverage/solar-ids/build-info" "coverage/solar-ids/export"
+      buildOutput <- mconcat <$> readSolcBatch "coverage/solar-ids/export"
       let main = sourceSnippets buildOutput "coverage/solar-ids/src/Main.sol:Main"
           b = sourceSnippets buildOutput "coverage/solar-ids/b/src/B.sol:B"
       assertBool "Zlib's x + 1 is not mapped to Zlib.sol" $
