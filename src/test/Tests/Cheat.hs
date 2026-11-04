@@ -39,5 +39,6 @@ cheatTests =
         [ ("echidna_over_ask_in_constructor failed", passed "echidna_over_ask_in_constructor")
         , ("echidna_over_ask_in_call failed",        passed "echidna_over_ask_in_call")
         , ("echidna_under_ask_keeps_gas failed",     passed "echidna_under_ask_keeps_gas")
+        , ("echidna_failed_cheat_keeps_gas failed",  passed "echidna_failed_cheat_keeps_gas")
         ]
     ]

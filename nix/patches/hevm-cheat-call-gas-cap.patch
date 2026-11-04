@@ -1,5 +1,5 @@
 diff --git a/src/EVM.hs b/src/EVM.hs
-index 4b8f561..1bfa645 100644
+index 4b8f561..f033a84 100644
 --- a/src/EVM.hs
 +++ b/src/EVM.hs
 @@ -1980,17 +1980,24 @@ cheat gas (inOffset, inSize) (outOffset, outSize) xs = do
@@ -50,7 +50,27 @@ index 4b8f561..1bfa645 100644
    | xTo == consoleAddr = do
        calldata <- readMemory xInOffset xInSize
        pushTrace $ ConsoleLog calldata
-@@ -3954,6 +3965,7 @@ instance VMOps Symbolic where
+@@ -3242,7 +3253,7 @@ finishFrameNoExpectation how = do
+       case nextFrame.context of
+ 
+         -- Were we calling?
+-        CallContext _ _ outOffset outSize _ _ _ reversion subState' -> do
++        CallContext target _ outOffset outSize _ _ _ reversion subState' -> do
+ 
+           -- Excerpt K.1. from the yellow paper:
+           -- K.1. Deletion of an Account Despite Out-of-gas.
+@@ -3280,6 +3291,10 @@ finishFrameNoExpectation how = do
+               revertContracts
+               revertSubstate
+               assign (#state % #returndata) mempty
++              -- A cheatcode that fails (one hevm does not implement, say)
++              -- hands its allowance back, as in Foundry: suites probe
++              -- optional cheatcodes with a low-level call and carry on.
++              when (target == cheatCode) $ reclaimRemainingGasAllowance oldVm
+               push 0
+         -- Or were we creating?
+         CreationContext _ _ reversion subState' -> do
+@@ -3954,6 +3969,7 @@ instance VMOps Symbolic where
      n <- use (#env % #freshGasVals)
      pushSym $ Expr.Gas "" n
    enoughGas _ _ = True
@@ -58,7 +78,7 @@ index 4b8f561..1bfa645 100644
    subGas _ _ = ()
    toGas _ = ()
    whenSymbolicElse a _ = a
-@@ -4140,6 +4152,7 @@ instance VMOps Concrete where
+@@ -4140,6 +4156,7 @@ instance VMOps Concrete where
      push (into vm.state.gas)
  
    enoughGas cost gasCap = cost <= gasCap

@@ -34,6 +34,18 @@ contract TestCheatOverAskGas {
         }
     }
 
+    // A cheatcode that fails must leave the caller its gas, as in Foundry:
+    // suites probe cheatcodes hevm may not have (here signP256) this way.
+    bool public failedCheatBurnedGas;
+
+    function callMissingCheat(uint8 k) public {
+        uint256 before = gasleft();
+        (bool ok,) = HEVM_ADDRESS.call(abi.encodeWithSignature("signP256(uint256,bytes32)", 1 + uint256(k), bytes32(0)));
+        if (!ok && gasleft() * 2 < before) {
+            failedCheatBurnedGas = true;
+        }
+    }
+
     function overAskWarp(uint256 t) internal returns (bool) {
         (bool ok,) = HEVM_ADDRESS.call{gas: gasleft() + 1000}(abi.encodeWithSelector(Hevm.warp.selector, t));
         return ok && block.timestamp == t;
@@ -49,5 +61,9 @@ contract TestCheatOverAskGas {
 
     function echidna_under_ask_keeps_gas() public view returns (bool) {
         return !mintedGas;
+    }
+
+    function echidna_failed_cheat_keeps_gas() public view returns (bool) {
+        return !failedCheatBurnedGas;
     }
 }
