@@ -1,0 +1,82 @@
+name: Engine memory regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/memory-growth]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71
+        with:
+          name: trailofbits
+      - name: Install pinned Foundry and solc
+        run: |
+          mkdir -p "$RUNNER_TEMP/foundry"
+          curl -fsSL https://github.com/foundry-rs/foundry/releases/download/v1.9.0/foundry_v1.9.0_linux_amd64.tar.gz -o "$RUNNER_TEMP/foundry.tar.gz"
+          tar -xzf "$RUNNER_TEMP/foundry.tar.gz" -C "$RUNNER_TEMP/foundry"
+          echo "$RUNNER_TEMP/foundry" >> "$GITHUB_PATH"
+          for version in 0.8.10 0.8.25; do
+            mkdir -p "$RUNNER_TEMP/solc-$version"
+            curl -fsSL "https://github.com/ethereum/solidity/releases/download/v$version/solc-static-linux" -o "$RUNNER_TEMP/solc-$version/solc"
+            chmod +x "$RUNNER_TEMP/solc-$version/solc"
+            artifact_dir="${VIRTUAL_ENV:-$HOME}/.solc-select/artifacts/solc-$version"
+            mkdir -p "$artifact_dir"
+            ln -s "$RUNNER_TEMP/solc-$version/solc" "$artifact_dir/solc-$version"
+          done
+      - name: Build and test in the Nix development shell
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            cabal update
+            cabal build all --enable-tests
+            test_path="$PATH"
+            suite_status=0
+            for version in 0.8.10 0.8.25; do
+              export PATH="$RUNNER_TEMP/solc-$version:$test_path"
+              export SOLC_VERSION="$version"
+              solc --version
+              cabal test --test-show-details=direct --test-options="-p !/Symbolic/" || suite_status=1
+            done
+            python3 tests/memory/regression.py "$(cabal list-bin exe:echidna)"
+            exit "$suite_status"
+          '
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: memory-regression-results
+          path: |
+            memory-results/
+            dist-newstyle/**/test/*.log
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71
+        with:
+          name: trailofbits
+      - name: Build the macOS binary for the Wildcat smoke test
+        run: |
+          nix build .#packages.aarch64-darwin.echidna-redistributable
+          tar -czf echidna-macos.tar.gz -C result/bin echidna
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: echidna-macos
+          path: echidna-macos.tar.gz

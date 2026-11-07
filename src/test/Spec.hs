@@ -19,6 +19,7 @@ import Tests.Overflow (overflowTests)
 import Tests.Research (researchTests)
 import Tests.Sample (sampleTests)
 import Tests.Seed (seedTests)
+import Tests.SourceMapping (sourceMappingTests)
 import Tests.Symbolic (symbolicTests)
 import Tests.Values (valuesTests)
 
@@ -33,6 +34,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , integrationTests
            , valuesTests
            , coverageTests
+           , sourceMappingTests
            , abiv2Tests
            , assertionTests
            , overflowTests
