@@ -1,6 +1,8 @@
-## Unreleased
+## 4.5.1
 
 * hevm grows EVM memory geometrically again (2x) instead of to the exact size on every expansion. Exact-size growth copied the whole memory on each expansion, and suites whose call frames reach ~1 MiB of memory (as Solar-built harnesses do) fragmented the Haskell heap: on a Solar-built suite, RSS halves and fragmentation drops from 5.3 GiB to zero with no loss of throughput
+* Coverage identities for contracts with immutables are restored, deployment-hash memoization is bounded, constructors are validated before immutable references are restored, and the final CBOR metadata length is read without scanning the payload (#32, #33)
+* `echidna --version` and the UI title report 4.5.1.
 
 ## 4.5
 
