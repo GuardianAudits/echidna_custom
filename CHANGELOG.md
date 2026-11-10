@@ -1,3 +1,7 @@
+## Unreleased
+
+* hevm grows EVM memory geometrically again (2x) instead of to the exact size on every expansion. Exact-size growth copied the whole memory on each expansion, and suites whose call frames reach ~1 MiB of memory (as Solar-built harnesses do) fragmented the Haskell heap: on a Solar-built suite, RSS halves and fragmentation drops from 5.3 GiB to zero with no loss of throughput
+
 ## 4.5
 
 * Per-line execution counts, and how many of those runs were in failed transactions, in the HTML report, `coverage_exec_counts.json` and the MCP `get_coverage_executions` tool. New `coverageHitCounts: auto | true | false` key (#26)

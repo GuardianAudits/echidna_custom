@@ -1,0 +1,18 @@
+--- a/src/EVM.hs
++++ b/src/EVM.hs
+@@ -3931,10 +3931,11 @@
+   let currentSize = VS.Mutable.length memory
+   let toAlloc = requiredSize - currentSize
+   if toAlloc > 0 then do
+-    -- Keep concrete memory close to the logical EVM size. The previous 2x
+-    -- growth policy retains large transient vectors for low-level calls with
+-    -- dynamic bytes return data.
+-    let targetSize = requiredSize
++    -- Grow geometrically. Growing to the exact size copies the whole vector on
++    -- every expansion, so a frame that reaches ~1 MiB of memory leaves about a
++    -- hundred dead copies behind. Each is a large object close to one GHC
++    -- megablock, and they fragment the heap.
++    let targetSize = max requiredSize (2 * currentSize)
+     let toGrow = max 8192 $ targetSize - currentSize
+     memory' <- VS.Mutable.grow memory toGrow
+     assign (#state % #memory) (ConcreteMemory memory')
