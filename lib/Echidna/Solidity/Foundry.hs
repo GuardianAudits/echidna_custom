@@ -11,6 +11,7 @@ module Echidna.Solidity.Foundry
   , FoundryBuild(..)
   , compilerFromVersion
   , readFoundryBuilds
+  , restoreImmutableReferences
   , foundryOutArg
   , compilerIdsFor
   , foundryPath
@@ -21,7 +22,9 @@ import Control.Monad (forM, guard)
 import Data.Aeson
   ( FromJSON(..), Value, eitherDecode, eitherDecodeFileStrict, withObject
   , (.:), (.:?), (.!=) )
-import Data.Aeson.Types (Parser)
+import Data.Aeson.Types (Parser, parseMaybe)
+import Data.ByteString qualified as BS
+import Data.ByteString.Base16 qualified as Base16
 import Data.ByteString.Lazy.Char8 qualified as BSL
 import Data.Functor ((<&>))
 import Data.List (nub, sort)
@@ -30,12 +33,16 @@ import Data.Map qualified as Map
 import Data.Maybe (catMaybes, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, makeAbsolute)
 import System.Exit (ExitCode(..))
 import System.FilePath
-  (joinPath, normalise, splitDirectories, takeBaseName, takeExtension, (</>))
+  (joinPath, normalise, splitDirectories, takeBaseName, takeExtension, takeFileName, (</>))
 import System.Process (cwd, proc, readCreateProcessWithExitCode)
 import Text.Read (readMaybe)
+
+import EVM.Solidity (BuildOutput(..), Contracts(..), Reference(..), SolcContract(..))
+import EVM.Types (W256)
 
 data Compiler = Solc | Solar
   deriving (Eq, Show)
@@ -70,6 +77,48 @@ readFoundryBuilds cryticArgs root = do
   if not isFoundry then pure [] else do
     out <- maybe (forgeOut root) pure (foundryOutArg cryticArgs)
     readBuildInfoDir root (root </> out </> "build-info")
+
+-- crytic-compile's combined JSON drops immutable locations. Recover them from
+-- the corresponding Foundry artifact, but only when its complete bytecode
+-- matches this export. A stale artifact must never mask code bytes.
+restoreImmutableReferences :: [String] -> FilePath -> BuildOutput -> IO BuildOutput
+restoreImmutableReferences args root original@(BuildOutput (Contracts contracts) sources) = do
+  isFoundry <- doesFileExist (root </> "foundry.toml")
+  if not isFoundry then pure original else do
+    out <- maybe (forgeOut root) pure (foundryOutArg args)
+    restored <- traverse (restore (root </> out)) contracts
+    pure $ BuildOutput (Contracts restored) sources
+  where
+  restore out contract
+    | BS.null contract.runtimeCode || not (Map.null contract.immutableReferences) = pure contract
+    | otherwise = do
+        let (source, name) = T.breakOnEnd ":" contract.contractName
+            path = out </> takeFileName (T.unpack $ T.dropEnd 1 source)
+                       </> T.unpack name <> ".json"
+        exists <- doesFileExist path
+        artifact <- if exists then either (const Nothing) Just <$> eitherDecodeFileStrict path
+                              else pure Nothing
+        pure $ case artifact >>= parseMaybe runtimeReferences of
+          Just (creation, runtime, refs)
+            | matches creation contract.creationCode
+            , matches runtime contract.runtimeCode
+            , all (validReference $ BS.length contract.runtimeCode) (concat $ Map.elems refs)
+            -> contract { immutableReferences = refs }
+          _ -> contract
+
+  validReference size (Reference start len) =
+    start >= 0 && len > 0 && len <= size && start <= size - len
+
+  matches code bytes =
+    T.toLower (maybe code id $ T.stripPrefix "0x" code)
+      == TE.decodeUtf8 (Base16.encode bytes)
+
+  runtimeReferences :: Value -> Parser (Text, Text, Map W256 [Reference])
+  runtimeReferences = withObject "artifact" $ \artifact -> do
+    creation <- artifact .: "bytecode" >>= withObject "creation bytecode" (.: "object")
+    deployed <- artifact .: "deployedBytecode"
+    withObject "deployed bytecode" (\code ->
+      (creation,,) <$> code .: "object" <*> code .:? "immutableReferences" .!= mempty) deployed
 
 -- | The out directory crytic-compile's @--foundry-out-directory@ names.
 foundryOutArg :: [String] -> Maybe FilePath

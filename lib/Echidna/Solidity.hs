@@ -44,7 +44,8 @@ import Echidna.ABI
   , commonTypeSizes, mkValidAbiInt, mkValidAbiUInt )
 import Echidna.Deploy (deployContracts, deployBytecodes)
 import Echidna.Exec (execTx, execTxWithCov, initialVM)
-import Echidna.Solidity.Foundry (FoundryBuild(..), compilerIdsFor, readFoundryBuilds)
+import Echidna.Solidity.Foundry
+  (FoundryBuild(..), compilerIdsFor, readFoundryBuilds, restoreImmutableReferences)
 import Echidna.SourceAnalysis.Slither
 import Echidna.Test (createTests, isAssertionMode, isPropertyMode, isFoundryMode, isOptimizationMode)
 import Echidna.Types.Campaign (CampaignConf(..))
@@ -147,7 +148,9 @@ compileContracts solConf fp = do
         ExitSuccess -> do
           isProject <- doesDirectoryExist x
           builds <- if isProject then readFoundryBuilds solConf.cryticArgs x else pure []
-          mconcat <$> readSolcBatch builds "crytic-export"
+          output <- mconcat <$> readSolcBatch builds "crytic-export"
+          if isProject then restoreImmutableReferences solConf.cryticArgs x output
+                       else pure output
         ExitFailure _ -> throwM $ CompileFailure out err
 
     -- | OS-specific path to the "null" file, which accepts writes without storing them

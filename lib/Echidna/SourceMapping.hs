@@ -5,7 +5,7 @@ import Data.Bits (shiftL, (.|.))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.IORef (IORef, readIORef, atomicModifyIORef')
-import Data.List (find, sortBy)
+import Data.List (find, sortBy, sortOn)
 import Data.Ord (Down(..))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -13,7 +13,7 @@ import Data.Maybe (mapMaybe)
 import Data.Vector qualified as V
 import Data.Word (Word16)
 
-import EVM.Dapp (DappInfo(..), findSrc)
+import EVM.Dapp (Code(..), DappInfo(..), compareCode, findSrc)
 import EVM.Expr (maybeLitByteSimp)
 import EVM.Solidity (CodeType(..), SolcContract(..))
 import EVM.Types (Contract(..), ContractCode(..), RuntimeCode(..), W256)
@@ -29,6 +29,17 @@ import Echidna.SymExec.Symbolic (forceWord)
 -- from sharing a cache line. `CodehashMap` is used in signature map and
 -- coverage map lookups.
 type CodehashMap = IORef (Map (CodeType, W256) W256)
+
+-- This is a disposable memo, not campaign state. Constructor arguments and
+-- immutables can otherwise leave one entry per deployment for the entire run.
+maxCodehashCacheEntries :: Int
+maxCodehashCacheEntries = 4096
+
+cacheCodehash :: CodehashMap -> CodeType -> W256 -> W256 -> IO ()
+cacheCodehash ref kind actual canonical =
+  atomicModifyIORef' ref $ \old ->
+    let base = if Map.size old >= maxCodehashCacheEntries then Map.empty else old
+    in (Map.insert (kind, actual) canonical base, ())
 
 -- | Which kind of code unit a contract is currently running.
 codeTypeOf :: Contract -> CodeType
@@ -47,12 +58,12 @@ lookupCodehash chmap codehash contr dapp = do
     Just val -> pure val
     Nothing -> do
       -- hevm's `findSrc` doesn't always work, since `SolcContract.immutableReferences` isn't always populated
-      let solcContract = findSrc contr dapp <|> findSrcByMetadata contr dapp
+      let solcContract = findSrcForReal dapp contr
           canonical = case kind of
             Creation -> (.creationCodehash)
             Runtime -> (.runtimeCodehash)
           originalCodehash = maybe codehash canonical solcContract
-      atomicModifyIORef' chmap $ (, ()) . Map.insert (kind, codehash) originalCodehash
+      cacheCodehash chmap kind codehash originalCodehash
       pure originalCodehash
 
 -- | Given a map from codehash to some values of type `a`, lookup a contract in the map using its codehash.
@@ -103,7 +114,46 @@ findSrcByMetadata contr dapp = find compareMetadata (snd <$> Map.elems dapp.solc
     (RuntimeCode (SymbolicRuntimeCode c)) -> Just $ BS.pack $ mapMaybe maybeLitByteSimp $ V.toList c
 
 findSrcForReal :: DappInfo -> Contract -> Maybe SolcContract
-findSrcForReal dapp contr = findSrc contr dapp <|> findSrcByMetadata contr dapp
+findSrcForReal dapp contr =
+  findSrc contr dapp <|> findSrcByTemplate contr dapp <|> findSrcByMetadata contr dapp
+
+-- Constructor arguments are data appended to a known creation program.
+-- Runtime variants may differ only at compiler-reported immutable locations.
+-- Ignore metadata, as hevm's exact-hash lookup already does; it can differ for
+-- an archived deployment of otherwise identical code. Never merge unknown code
+-- by its opcode layout or by guessing which PUSH operands are immutables.
+findSrcByTemplate :: Contract -> DappInfo -> Maybe SolcContract
+findSrcByTemplate contr dapp = case contr.code of
+  InitCode bytes _ -> find (matchesCreation bytes) creationTemplates
+  RuntimeCode (ConcreteRuntimeCode bytes) -> runtimeTemplate bytes
+  _ -> Nothing
+  where
+  creationTemplates = sortOn (Down . BS.length . (.creationCode)) $
+    Map.elems dapp.solcByName
+  matchesCreation bytes template =
+    let program = stripFinalMetadata template.creationCode
+        prefix = BS.take (BS.length template.creationCode) bytes
+    in not (BS.null program)
+       && BS.length bytes >= BS.length template.creationCode
+       && stripFinalMetadata prefix == program
+  runtimeTemplate bytes = snd <$> find
+    (\(Code program refs, _) ->
+      compareCode (stripFinalMetadata bytes) (Code (stripFinalMetadata program) refs))
+    dapp.solcByCode
+
+-- Embedded contracts can have their own metadata. Only remove a validated
+-- final trailer, so executable bytes after an embedded trailer still matter.
+stripFinalMetadata :: ByteString -> ByteString
+stripFinalMetadata bytes
+  | size < 2 = bytes
+  | start >= 0 && any (`BS.isPrefixOf` metadata) knownBzzrPrefixes = BS.take start bytes
+  | otherwise = bytes
+  where
+  size = BS.length bytes
+  metadataSize = fromIntegral (BS.index bytes (size - 2)) `shiftL` 8
+             .|. fromIntegral (BS.index bytes (size - 1))
+  start = size - metadataSize - 2
+  metadata = BS.drop start bytes
 
 -- | Find the position of CBOR length indicator after a metadata prefix.
 -- The length indicator is 2 bytes that encode the distance from prefix start to that position.
