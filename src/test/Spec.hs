@@ -16,6 +16,7 @@ import Tests.MCPParse (mcpParseTests)
 import Tests.Onchain (onchainTests)
 import Tests.Optimization (optimizationTests)
 import Tests.Overflow (overflowTests)
+import Tests.ReplaySeed (replaySeedTests)
 import Tests.Research (researchTests)
 import Tests.Sample (sampleTests)
 import Tests.Seed (seedTests)
@@ -44,6 +45,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , encodingJSONTests
            , onchainTests
            , mcpParseTests
+           , replaySeedTests
            , sampleTests
            , foundryTestGenTests
            , cheatTests

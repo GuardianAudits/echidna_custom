@@ -137,6 +137,7 @@ tests:
       - data-dword
       - echidna
       - exceptions
+      - filepath
       - optics-core
       - primitive
       - process
