@@ -87,6 +87,9 @@ filterBlacklist: true
 allowFFI: false
 #directory to save the corpus; by default is disabled
 corpusDir: null
+#directory that seeds of <corpusDir>/coverage are moved to when replaying them
+#at startup adds no coverage; by default it is echidna-archive next to corpusDir
+corpusArchiveDir: null
 #directory to save coverage reports; by default is disabled
 coverageDir: null
 # list of file formats to save coverage reports in; default is all possible formats

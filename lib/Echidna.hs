@@ -115,7 +115,8 @@ loadInitialCorpus env = do
     Nothing -> pure []
     Just dir -> do
       ctxs1 <- loadTxs (dir </> "reproducers")
-      ctxs2 <- loadTxs (dir </> "coverage")
+      (ctxs2, namedCopies) <- preferNamedSeeds <$> loadTxs (dir </> "coverage")
+      mapM_ (archiveSeed env) namedCopies
       pure (ctxs1 ++ ctxs2)
 
 instance TTY IO where

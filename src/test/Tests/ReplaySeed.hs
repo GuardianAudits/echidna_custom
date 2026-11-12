@@ -1,4 +1,4 @@
-module Tests.ReplaySeed (replaySeedTests) where
+module Tests.ReplaySeed (replaySeedTests, Campaign(..), withCampaignConfig, drain) where
 
 import Control.Concurrent.STM (TChan, atomically, tryReadTChan)
 import Control.Exception (bracket)
@@ -32,6 +32,7 @@ import EVM.Types (Addr, VM, VMType(Concrete))
 
 import Common (testConfig)
 import Echidna (prepareContract)
+import Echidna.ABI (GenDict)
 import Echidna.MCP
   ( StreamableCoverageState(..), StreamableEventBuffer(..), StreamableMCPState(..)
   , streamableToolsCall, streamableToolsList
@@ -339,6 +340,7 @@ replaySeedTests = testGroup "MCP replay_seed"
 data Campaign = Campaign
   { env :: Env
   , vm :: VM Concrete
+  , dict :: GenDict
   , corpusDir :: FilePath
   , set0 :: Int -> Tx
   , set1 :: Int -> Tx
@@ -354,11 +356,11 @@ withCampaignConfig configure body =
     let cfg = configure testConfig dir
         files = "basic/flags.sol" :| []
     buildOutput <- compileContracts cfg.solConf files
-    (vm, env, _) <- prepareContract cfg files buildOutput Nothing 0
+    (vm, env, dict) <- prepareContract cfg files buildOutput Nothing 0
     let sender = Set.findMin cfg.solConf.sender
         target = cfg.solConf.contractAddr
     body Campaign
-      { env, vm, corpusDir = dir
+      { env, vm, dict, corpusDir = dir
       , set0 = call sender target "set0"
       , set1 = call sender target "set1"
       }

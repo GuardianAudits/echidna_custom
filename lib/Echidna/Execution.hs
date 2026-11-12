@@ -5,7 +5,7 @@ module Echidna.Execution where
 
 import Control.Concurrent.STM (atomically, writeTChan)
 import Control.DeepSeq (force)
-import Control.Monad (when, unless, forM_)
+import Control.Monad (foldM, forM_, when, unless)
 import Control.Monad.Catch (MonadThrow(..))
 import Control.Monad.Random.Strict (MonadRandom)
 import Control.Monad.Reader (MonadReader, asks, liftIO, ask)
@@ -34,6 +34,7 @@ import EVM.Types qualified as EVM
 import Echidna.ABI
 import Echidna.Events (extractEventValues)
 import Echidna.Exec
+import Echidna.Output.Corpus (archiveSeed)
 import Echidna.Types.Campaign
 import Echidna.Types.Config
 import Echidna.Types.Corpus (Corpus, corpusSize)
@@ -57,17 +58,30 @@ replayCorpus
   -> VM Concrete -- ^ VM to start replaying from
   -> [(FilePath, [Tx])] -- ^ corpus to replay
   -> m ()
-replayCorpus publishState vm txSeqs =
-  forM_ (zip [1..] txSeqs) $ \(i, (file, txSeq)) -> do
+replayCorpus publishState vm txSeqs = do
+  archived <- foldM replayOne (0 :: Int) (zip [1..] txSeqs)
+  when (archived > 0) $
+    pushWorkerEvent . Log $
+      "Archived " <> show archived <> " of " <> show (length txSeqs)
+        <> " replayed sequences that added no coverage"
+  where
+  replayOne archived (i, (file, txSeq)) = do
     let maybeFaultyTx =
           List.find (\tx -> LitAddr tx.dst `notElem` Map.keys vm.env.contracts) $
             List.filter (\case Tx { call = NoCall } -> False; _ -> True) txSeq
     case maybeFaultyTx of
       Nothing -> do
-        _ <- callseqWithStateFlush publishState vm txSeq True
+        (_, newCoverage) <- callseqWithStateFlush publishState vm txSeq True
         pushWorkerEvent (TxSequenceReplayed file i (length txSeqs))
-      Just faultyTx ->
+        -- A sequence that added nothing is not in the corpus the workers
+        -- mutate from; its file only makes the next replay longer.
+        moved <- if newCoverage then pure False else do
+          env <- ask
+          liftIO $ archiveSeed env file
+        pure $ if moved then archived + 1 else archived
+      Just faultyTx -> do
         pushWorkerEvent (TxSequenceReplayFailed file faultyTx)
+        pure archived
 
 -- | Runs a transaction sequence and checks if any test got falsified or can be
 -- minimized. Stores any useful data in the campaign state if coverage increased.

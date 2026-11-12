@@ -6,6 +6,7 @@ import Tests.Atomic (atomicTests)
 import Tests.Cheat (cheatTests)
 import Tests.Compile (compilationTests)
 import Tests.Config (configTests)
+import Tests.CorpusArchive (corpusArchiveTests)
 import Tests.Coverage (coverageTests)
 import Tests.Encoding (encodingJSONTests)
 import Tests.Foundry (foundryTests)
@@ -35,6 +36,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , integrationTests
            , valuesTests
            , coverageTests
+           , corpusArchiveTests
            , sourceMappingTests
            , abiv2Tests
            , assertionTests

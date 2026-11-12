@@ -132,6 +132,10 @@ data CampaignConf = CampaignConf
     -- ^ Frequency for the use of dictionary values in the random transactions
   , corpusDir          :: Maybe FilePath
     -- ^ Directory to load and save lists of transactions
+  , corpusArchiveDir   :: Maybe FilePath
+    -- ^ Directory that seeds of @corpusDir/coverage@ are moved to when
+    -- replaying them at startup adds no coverage. When unset it is
+    -- @echidna-archive@ next to the corpus directory.
   , coverageDir        :: Maybe FilePath
     -- ^ Directory to save coverage reports
   , mutConsts          :: MutationConsts Integer

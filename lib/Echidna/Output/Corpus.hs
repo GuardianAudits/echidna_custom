@@ -1,15 +1,18 @@
 module Echidna.Output.Corpus where
 
 import Control.Exception (IOException, handle)
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Control.Monad.Extra (unlessM)
 import Data.Aeson (ToJSON(..), decodeStrict, encodeFile)
 import Data.ByteString qualified as BS
+import Data.Char (isDigit)
 import Data.Hashable (hash)
-import Data.Maybe (catMaybes)
+import Data.List (partition)
+import Data.Maybe (catMaybes, fromMaybe)
+import Data.Set qualified as Set
 import Data.Time (LocalTime)
-import System.Directory (createDirectoryIfMissing, makeRelativeToCurrentDirectory, doesFileExist)
-import System.FilePath ((</>), (<.>))
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, makeRelativeToCurrentDirectory, removeFile, renameFile)
+import System.FilePath ((</>), (<.>), dropTrailingPathSeparator, takeBaseName, takeDirectory, takeFileName)
 
 import Echidna.Types.Campaign
 import Echidna.Types.Config
@@ -65,3 +68,61 @@ saveCorpusEvent env (_time, campaignEvent) = do
 
     exceptionHandler (e :: IOException) =
       pushCampaignEvent env (Failure $ "Problem while writing to file: " ++ show e)
+
+-- | Move a seed out of @<corpusDir>/coverage@ into the archive directory.
+-- Called for a sequence of the initial corpus whose replay added no coverage
+-- (no new instruction, call depth, edge or transaction result), so the next
+-- start does not replay it again. Returns whether a file was moved.
+--
+-- The archive is @corpusArchiveDir@, or @echidna-archive@ next to the corpus
+-- directory when that is unset. Nothing is moved when the campaign has no
+-- corpus directory, when coverage is off (no sequence can add coverage then),
+-- or when the file is not in @coverage/@: reproducers are never archived. A
+-- seed of the same name already in the archive is replaced.
+archiveSeed :: Env -> FilePath -> IO Bool
+archiveSeed env file =
+  case conf.corpusDir of
+    Just corpusDir | conf.coverageEnabled ->
+      handle exceptionHandler $ do
+        let name = takeFileName file
+            source = corpusDir </> "coverage" </> name
+            archiveDir = fromMaybe (defaultArchiveDir corpusDir) conf.corpusArchiveDir
+        present <- doesFileExist source
+        when present $ do
+          createDirectoryIfMissing True archiveDir
+          moveFile source (archiveDir </> name)
+        pure present
+    _ -> pure False
+  where
+    conf = env.cfg.campaignConf
+
+    -- A rename fails when the archive is on another filesystem.
+    moveFile source target =
+      handle (\(_ :: IOException) -> copyFile source target >> removeFile source) $
+        renameFile source target
+
+    exceptionHandler (e :: IOException) = do
+      pushCampaignEvent env (Failure $ "Problem while archiving " ++ file ++ ": " ++ show e)
+      pure False
+
+-- | Where archived seeds go when @corpusArchiveDir@ is unset: a directory
+-- next to the corpus, so it is not checkpointed or replayed with it.
+defaultArchiveDir :: FilePath -> FilePath
+defaultArchiveDir corpusDir =
+  takeDirectory (dropTrailingPathSeparator corpusDir) </> "echidna-archive"
+
+-- | A seed saved under a name of the caller's choice, as opposed to the hash
+-- of its transactions that Echidna names its own discoveries with.
+isNamedSeed :: FilePath -> Bool
+isNamedSeed = not . all isDigit . takeBaseName
+
+-- | Put the coverage seeds in replay order with named seeds first, so that of
+-- two seeds with the same coverage the named one is replayed first and kept.
+-- A hash-named seed with the same transactions as a named one is not replayed
+-- at all; those files are returned separately to be archived.
+preferNamedSeeds :: [(FilePath, [Tx])] -> ([(FilePath, [Tx])], [FilePath])
+preferNamedSeeds seeds = (named ++ kept, fst <$> copies)
+  where
+    (named, hashed) = partition (isNamedSeed . fst) seeds
+    namedTxs = Set.fromList (snd <$> named)
+    (copies, kept) = partition ((`Set.member` namedTxs) . snd) hashed
