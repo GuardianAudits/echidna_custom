@@ -5,14 +5,13 @@ import Control.Monad (unless, when)
 import Control.Monad.Extra (unlessM)
 import Data.Aeson (ToJSON(..), decodeStrict, encodeFile)
 import Data.ByteString qualified as BS
-import Data.Char (isDigit)
 import Data.Hashable (hash)
-import Data.List (partition)
+import Data.List (foldl', isPrefixOf, partition, sortOn)
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Set qualified as Set
 import Data.Time (LocalTime)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, makeRelativeToCurrentDirectory, removeFile, renameFile)
-import System.FilePath ((</>), (<.>), dropTrailingPathSeparator, takeBaseName, takeDirectory, takeFileName)
+import System.FilePath ((</>), (<.>), dropTrailingPathSeparator, takeDirectory, takeFileName)
 
 import Echidna.Types.Campaign
 import Echidna.Types.Config
@@ -111,18 +110,22 @@ defaultArchiveDir :: FilePath -> FilePath
 defaultArchiveDir corpusDir =
   takeDirectory (dropTrailingPathSeparator corpusDir) </> "echidna-archive"
 
--- | A seed saved under a name of the caller's choice, as opposed to the hash
--- of its transactions that Echidna names its own discoveries with.
+-- | A seed saved under a name of the caller's choice: its file name starts
+-- with @seed@. Every other name is taken for a hash of the content, whichever
+-- tool computed it.
 isNamedSeed :: FilePath -> Bool
-isNamedSeed = not . all isDigit . takeBaseName
+isNamedSeed = ("seed" `isPrefixOf`) . takeFileName
 
--- | Put the coverage seeds in replay order with named seeds first, so that of
--- two seeds with the same coverage the named one is replayed first and kept.
--- A hash-named seed with the same transactions as a named one is not replayed
--- at all; those files are returned separately to be archived.
+-- | Put the coverage seeds in replay order and drop the copies. Named seeds
+-- come first, so that of two seeds with the same coverage the named one is
+-- replayed first and kept. Of seeds with the same transactions only the first
+-- in that order is replayed; the files of the others are returned separately
+-- to be archived.
 preferNamedSeeds :: [(FilePath, [Tx])] -> ([(FilePath, [Tx])], [FilePath])
-preferNamedSeeds seeds = (named ++ kept, fst <$> copies)
+preferNamedSeeds seeds = (reverse kept, fst <$> reverse copies)
   where
-    (named, hashed) = partition (isNamedSeed . fst) seeds
-    namedTxs = Set.fromList (snd <$> named)
-    (copies, kept) = partition ((`Set.member` namedTxs) . snd) hashed
+    (named, hashed) = partition (isNamedSeed . fst) (sortOn fst seeds)
+    (_, kept, copies) = foldl' pick (Set.empty, [], []) (named ++ hashed)
+    pick (seen, keep, copy) seed@(_, txs)
+      | Set.member txs seen = (seen, keep, seed : copy)
+      | otherwise = (Set.insert txs seen, seed : keep, copy)

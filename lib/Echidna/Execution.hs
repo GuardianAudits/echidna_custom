@@ -140,7 +140,11 @@ callseqWithStateFlush publishState vm txSeq isReplaying = do
                                 , numCodehashes
                                 , edges
                                 , corpusSize = newSize
-                                , transactions = fst <$> results
+                                  -- The corpus saver writes an event's
+                                  -- transactions under a hash name. A replayed
+                                  -- sequence is on disk already; a second copy
+                                  -- would be loaded at every start.
+                                , transactions = if isReplaying then [] else fst <$> results
                                 }
 
     -- Broadcast new coverage to other agents (e.g. Symbolic)

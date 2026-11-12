@@ -14,7 +14,7 @@ import Test.Tasty.HUnit (Assertion, assertBool, testCase, (@?=))
 
 import Echidna (loadInitialCorpus)
 import Echidna.Execution (replayCorpus)
-import Echidna.Output.Corpus (archiveSeed, defaultArchiveDir, preferNamedSeeds)
+import Echidna.Output.Corpus (archiveSeed, defaultArchiveDir, isNamedSeed, preferNamedSeeds)
 import Echidna.Types.Campaign (WorkerState(..), initialWorkerState)
 import Echidna.Types.Campaign qualified as Campaign
 import Echidna.Types.Config (EConfig(..), Env(..))
@@ -89,31 +89,57 @@ corpusArchiveTests = testGroup "Corpus archive"
       defaultArchiveDir "run/echidna-corpus/" @?= "run" </> "echidna-archive"
       defaultArchiveDir "echidna-corpus" @?= "." </> "echidna-archive"
 
-  , testCase "named seeds are replayed before hash-named ones" $ do
-      let seeds = [("111.txt", [1]), ("gap-2.txt", [2]), ("222.txt", [3]), ("gap-1.txt", [4])]
-      fst (preferNamedSeeds' seeds) @?= ["gap-2.txt", "gap-1.txt", "111.txt", "222.txt"]
+  , testCase "a name starting with seed is named, decimal and hex hash names are not" $ do
+      isNamedSeed "seed_gap_v1_c2VudHJ5.txt" @?= True
+      isNamedSeed "seed-1.txt" @?= True
+      isNamedSeed "1057085892809747560.txt" @?= False
+      isNamedSeed "09daf68c1fc37b4b28fb.txt" @?= False
+      isNamedSeed "gap-1.txt" @?= False
 
-  , testCase "a hash-named copy of a named seed is set aside, other seeds are not" $ do
-      let seeds = [("111.txt", [7]), ("gap-1.txt", [7]), ("222.txt", [8]), ("333.txt", [8])]
-      preferNamedSeeds' seeds @?= (["gap-1.txt", "222.txt", "333.txt"], ["111.txt"])
+  , testCase "named seeds are replayed before the others, each group in name order" $ do
+      let seeds = [("111.txt", [1]), ("seed_gap_2.txt", [2]), ("0abc.txt", [3]), ("seed_gap_1.txt", [4])]
+      fst (preferNamedSeeds' seeds) @?= ["seed_gap_1.txt", "seed_gap_2.txt", "0abc.txt", "111.txt"]
 
-  , testCase "loading the corpus archives the hash-named copy and keeps the named seed" $
+  , testCase "of seeds with the same transactions the named one is kept" $ do
+      let seeds = [("111.txt", [7]), ("09daf68c.txt", [7]), ("seed_gap_1.txt", [7]), ("222.txt", [8])]
+      preferNamedSeeds' seeds @?= (["seed_gap_1.txt", "222.txt"], ["09daf68c.txt", "111.txt"])
+
+  , testCase "a decimal and a hex name for the same transactions leave one seed" $ do
+      let seeds = [("1057085892809747560.txt", [7]), ("09daf68c1fc37b4b28fb.txt", [7])]
+      preferNamedSeeds' seeds @?= (["09daf68c1fc37b4b28fb.txt"], ["1057085892809747560.txt"])
+
+  , testCase "identical named seeds leave one seed" $ do
+      let seeds = [("seed_gap_b.txt", [7]), ("seed_gap_a.txt", [7]), ("seed_gap_c.txt", [7])]
+      preferNamedSeeds' seeds @?= (["seed_gap_a.txt"], ["seed_gap_b.txt", "seed_gap_c.txt"])
+
+  , testCase "loading the corpus archives the copies and keeps the named seed" $
       withArchive $ \c -> do
         let seed = [c.set0 0, c.set1 0]
-        writeSeeds c "coverage" [("12345.txt", seed), ("gap-1.txt", seed), ("678.txt", [c.set0 0])]
+        writeSeeds c "coverage"
+          [("12345.txt", seed), ("0abc12.txt", seed), ("seed_gap_1.txt", seed), ("678.txt", [c.set0 0])]
         loaded <- loadInitialCorpus c.env
-        map fst loaded @?= ["gap-1.txt", "678.txt"]
-        filesIn (c.corpusDir </> "coverage") >>= (@?= ["678.txt", "gap-1.txt"])
-        filesIn (archiveDir c) >>= (@?= ["12345.txt"])
+        map fst loaded @?= ["seed_gap_1.txt", "678.txt"]
+        filesIn (c.corpusDir </> "coverage") >>= (@?= ["678.txt", "seed_gap_1.txt"])
+        filesIn (archiveDir c) >>= (@?= ["0abc12.txt", "12345.txt"])
 
-  , testCase "a named seed replayed first keeps its place over a hash-named seed with the same coverage" $
+  , testCase "a named seed keeps its place over a hash-named seed with the same coverage" $
       withArchive $ \c -> do
         -- Different transactions, same coverage: set0(100) takes the branch set0(0) takes.
-        writeSeeds c "coverage" [("999.txt", [c.set0 0]), ("gap-1.txt", [c.set0 100])]
+        writeSeeds c "coverage" [("999.txt", [c.set0 0]), ("seed_gap_1.txt", [c.set0 100])]
         loaded <- loadInitialCorpus c.env
         replay c loaded
-        filesIn (c.corpusDir </> "coverage") >>= (@?= ["gap-1.txt"])
+        filesIn (c.corpusDir </> "coverage") >>= (@?= ["seed_gap_1.txt"])
         filesIn (archiveDir c) >>= (@?= ["999.txt"])
+
+  , testCase "a replayed seed that adds coverage is not saved a second time" $
+      withArchive $ \c -> do
+        writeSeeds c "coverage" [("seed_gap_1.txt", [c.set0 0])]
+        events <- subscribeEvents c.env
+        replay c [("seed_gap_1.txt", [c.set0 0])]
+        seen <- drain events
+        -- The corpus saver writes a file for an event with transactions.
+        [txs | WorkerEvent _ _ NewCoverage { transactions = txs } <- seen] @?= [[]]
+        readCorpus c >>= (@?= [[c.set0 0]])
 
   , testCase "nothing is moved when coverage is off" $
       withCampaignConfig (\cfg dir -> coverageOff (withArchiveDir cfg dir)) $ \c -> do

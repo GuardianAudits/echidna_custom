@@ -287,7 +287,7 @@ replaySeedTests = testGroup "MCP replay_seed"
           replaySeedErrorText (InvalidSeed "name is empty") @?= "invalid seed, not replayed: name is empty"
 
       , testCase "a campaign without a corpus directory replays without saving" $
-          withCampaignConfig (const id) $ \c -> do
+          withCampaignConfig const $ \c -> do
             report <- expectReplayed =<< replaySeed c.env c.vm (seedArgs "gap-set0" [c.set0 0])
             field "file" report @?= Just Null
             assertBool "coverage is still reported" $ set0Assignment `elem` coveredLinesOf report
