@@ -200,6 +200,10 @@ execTxWith executeTx tx = do
   handleErrorsAndConstruction vmResult vmBeforeTx = case (vmResult, tx.call) of
     (Reversion, _) -> do
       tracesBeforeVMReset <- gets (.traces)
+      -- Events are read from the logs: with hevm traces off during fuzzing
+      -- an emitted event is recorded nowhere else. An event emitted before
+      -- the revert (emit AssertionFailed(..); revert();) must survive it.
+      logsBeforeVMReset <- gets (.logs)
       codeContractBeforeVMReset <- gets (.state.codeContract)
       calldataBeforeVMReset <- gets (.state.calldata)
       callvalueBeforeVMReset <- gets (.state.callvalue)
@@ -216,6 +220,7 @@ execTxWith executeTx tx = do
       #state % #calldata .= calldataBeforeVMReset
       #state % #callvalue .= callvalueBeforeVMReset
       #traces .= tracesBeforeVMReset
+      #logs .= logsBeforeVMReset
       #state % #codeContract .= codeContractBeforeVMReset
       #burned .= burnedGas
     (VMFailure x, _) -> do
