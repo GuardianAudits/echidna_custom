@@ -108,7 +108,8 @@ main = withUtf8 $ withCP65001 $ withStrippedExceptions $ do
 
       measureIO cfg.solConf.quiet "Saving corpus" $ do
         corpus <- readIORef env.corpusRef
-        saveTxs env (dir </> "coverage") (snd <$> Set.toList corpus)
+        -- Replayed seeds are on disk already, under whatever name they came with.
+        saveMissingTxs env (dir </> "coverage") (snd <$> Set.toList corpus)
 
       let isLargeOrSolved Solved = True
           isLargeOrSolved (Large _) = True

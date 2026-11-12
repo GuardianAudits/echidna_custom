@@ -1,0 +1,6 @@
+# Test configuration for archiving corpus seeds that add no coverage
+testMode: "property"
+testLimit: 100
+corpusDir: "test-corpus"
+corpusArchiveDir: "echidna-archive"
+quiet: true

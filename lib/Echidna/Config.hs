@@ -123,6 +123,7 @@ instance FromJSON EConfigWithUsage where
         <*> v ..:? "seed"
         <*> v ..:? "dictFreq" ..!= 0.40
         <*> v ..:? "corpusDir" ..!= Nothing
+        <*> v ..:? "corpusArchiveDir" ..!= Nothing
         <*> v ..:? "coverageDir" ..!= Nothing
         <*> v ..:? "mutConsts" ..!= defaultMutationConsts
         <*> v ..:? "coverageFormats" ..!= [Txt,Html,Lcov]

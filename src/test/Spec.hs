@@ -6,6 +6,7 @@ import Tests.Atomic (atomicTests)
 import Tests.Cheat (cheatTests)
 import Tests.Compile (compilationTests)
 import Tests.Config (configTests)
+import Tests.CorpusArchive (corpusArchiveTests)
 import Tests.Coverage (coverageTests)
 import Tests.Encoding (encodingJSONTests)
 import Tests.Foundry (foundryTests)
@@ -16,6 +17,7 @@ import Tests.MCPParse (mcpParseTests)
 import Tests.Onchain (onchainTests)
 import Tests.Optimization (optimizationTests)
 import Tests.Overflow (overflowTests)
+import Tests.ReplaySeed (replaySeedTests)
 import Tests.Research (researchTests)
 import Tests.Sample (sampleTests)
 import Tests.Seed (seedTests)
@@ -34,6 +36,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , integrationTests
            , valuesTests
            , coverageTests
+           , corpusArchiveTests
            , sourceMappingTests
            , abiv2Tests
            , assertionTests
@@ -44,6 +47,7 @@ main = withCurrentDirectory "./tests/solidity" . defaultMain $
            , encodingJSONTests
            , onchainTests
            , mcpParseTests
+           , replaySeedTests
            , sampleTests
            , foundryTestGenTests
            , cheatTests

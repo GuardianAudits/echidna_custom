@@ -69,6 +69,8 @@ The example above uses the default **property** mode, but Echidna supports sever
 
 After finishing a campaign, Echidna can save a coverage maximizing **corpus** in a special directory specified with the `corpusDir` config option. This directory will contain two entries: (1) a directory named `coverage` with JSON files that can be replayed by Echidna and (2) a plain-text file named `covered.txt`, a copy of the source code with coverage annotations.
 
+A corpus collects seeds that no longer add anything. Every seed of `corpusDir/coverage` whose replay at startup adds no coverage (no new instruction, call depth, edge or transaction result) is moved to `echidna-archive` next to the corpus directory, or to the directory set with the `corpusArchiveDir` config option, so later starts replay only the seeds that count. Seeds whose file name starts with `seed` are replayed before the others, so of two seeds with the same coverage that one stays. Of seeds with identical transactions only one is replayed; the rest are archived when the corpus is loaded. Reproducers are never moved. To restore a seed, move its file back.
+
 If you run `tests/solidity/basic/flags.sol` example, Echidna will save a few files serialized transactions in the `coverage` directory and a `covered.$(date +%s).txt` file with the following lines:
 
 ```text

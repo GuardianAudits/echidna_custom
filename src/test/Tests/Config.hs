@@ -7,7 +7,7 @@ import Data.Maybe (isNothing)
 import Data.Yaml qualified as Y
 import Optics.Core (sans)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, assertBool, assertEqual, assertFailure)
+import Test.Tasty.HUnit (testCase, assertBool, assertEqual, assertFailure, (@?=))
 
 import Echidna.Config (defaultConfig, parseConfig)
 import Echidna.Types.Campaign (CampaignConf(..))
@@ -44,6 +44,12 @@ configTests = testGroup "Configuration tests" $
       config <- (.econfig) <$> parseConfig "basic/corpus-fallback-test.yaml"
       assertBool "corpusDir should be set" $ config.campaignConf.corpusDir == Just "test-corpus"
       assertBool "coverageDir should not be set" $ isNothing (config.campaignConf.coverageDir)
+  , testCase "parse corpusArchiveDir" $ do
+      config <- (.econfig) <$> parseConfig "basic/corpus-archive-test.yaml"
+      config.campaignConf.corpusArchiveDir @?= Just "echidna-archive"
+      config.campaignConf.corpusDir @?= Just "test-corpus"
+  , testCase "corpusArchiveDir defaults to Nothing" $
+      assertBool "" $ isNothing (defaultConfig.campaignConf.corpusArchiveDir)
   , testCase "corpusDir defaults to Nothing" $
       assertBool "" $ isNothing (defaultConfig.campaignConf.corpusDir)
   , testCase "coverageDir defaults to Nothing" $

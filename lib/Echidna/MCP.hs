@@ -50,6 +50,7 @@ import Echidna.Types.Tx (Tx(..), TxCall(..), TxResult, maxGasPerBlock)
 import Echidna.Types.Coverage (CoverageFileType(..), coverageStats)
 import Echidna.Output.Source (CoverageSnapshot(..), coverageLineExecutions, coverageLineHits, ppCoveredCode, saveLcovHook, snapshotCoverage)
 import Echidna.Output.Corpus (loadTxs)
+import Echidna.MCP.ReplaySeed (replaySeed, replaySeedErrorText)
 
 import Echidna.Types.Config
   ( Env(..), EConfig(..), InitialCorpusReplayState, MCPConf(..)
@@ -799,6 +800,7 @@ streamableToolsList = object
       , streamableTool "get_reproducer" "Get a reproducer snapshot" streamableReproducerSchema
       , streamableTool "get_coverage_hits" "Get coverage line hits" streamableEmptyArgsSchema
       , streamableTool "get_coverage_executions" "Get per-line execution and failed-execution counts" streamableEmptyArgsSchema
+      , streamableTool "replay_seed" "Replay a named seed into the running campaign. A valid seed is replayed, saved as <corpus-dir>/coverage/<name>.txt, added to the corpus every worker mutates from, and answered with the coverage of that seed alone (line hits and LCOV). Every test is evaluated after each transaction: a seed that falsifies one is answered with broken=true and the falsified tests, and the break is recorded in the campaign. An invalid seed is not replayed or saved." streamableReplaySeedSchema
       ]
   ]
   where
@@ -851,6 +853,22 @@ streamableReproducerSchema = object
           ]
       ]
   , "required" .= ["testKey" :: Text]
+  , "additionalProperties" .= False
+  ]
+
+streamableReplaySeedSchema :: Value
+streamableReplaySeedSchema = object
+  [ "type" .= ("object" :: Text)
+  , "properties" .= object
+      [ "name" .= object
+          [ "type" .= ("string" :: Text)
+          , "description" .= ("File name for the seed, without directories: ASCII letters, digits, '.', '_' and '-'. A seed already saved under this name is replaced." :: Text)
+          ]
+      , "transactions" .= object
+          [ "description" .= ("The seed in corpus file format: a JSON array of transactions, or a string holding that array." :: Text)
+          ]
+      ]
+  , "required" .= ["name" :: Text, "transactions"]
   , "additionalProperties" .= False
   ]
 
@@ -954,6 +972,19 @@ runStreamableTool env workerRefs st name args =
     "get_coverage_executions" -> do
       result <- streamableCoverageExecutionsWhenReady env st
       pure $ either (StreamableToolRpcError streamableCoverageNotReadyCode) StreamableToolOk result
+    "replay_seed" ->
+      case (parseStreamableArgs args, st.streamableInitialVm) of
+        (Left msg, _) -> pure $ StreamableToolError ("invalid seed, not replayed: " <> msg)
+        (_, Nothing) -> pure $ StreamableToolError "seed replay is unavailable: this server has no initial VM"
+        (Right parsed, Just initialVm) -> do
+          result <- replaySeed env initialVm parsed
+          case result of
+            Left err -> pure $ StreamableToolError (replaySeedErrorText err)
+            Right value -> do
+              -- The campaign's coverage changed under the cached feeds.
+              ready <- initialCorpusReplayComplete st.streamableInitialCorpusReplayRef
+              when ready $ streamableStartCoverageRefresh env st
+              pure $ StreamableToolOk value
     _ -> pure $ StreamableToolRpcError (-32602) ("Unknown tool: " <> name)
 
 readStreamableResource :: Env -> [IORef WorkerState] -> StreamableMCPState -> Text -> IO (Either Text Value)
