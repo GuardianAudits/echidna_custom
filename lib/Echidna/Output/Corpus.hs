@@ -30,14 +30,28 @@ saveTxs env dir = mapM_ saveTxSeq where
       encodeFile file (toJSON txSeq)
       pushCampaignEvent env (ReproducerSaved file)
 
+-- | Save the sequences that are not in the directory yet under any name.
+-- 'saveTxs' alone only looks for a sequence's hash name, so a sequence that
+-- is on disk as a named seed, or under another tool's hash, would get a
+-- second file.
+saveMissingTxs :: Env -> FilePath -> [[Tx]] -> IO ()
+saveMissingTxs env dir txSeqs = do
+  onDisk <- Set.fromList . fmap snd <$> readTxs dir
+  saveTxs env dir (filter (`Set.notMember` onDisk) txSeqs)
+
 loadTxs :: FilePath -> IO [(FilePath, [Tx])]
 loadTxs dir = do
+  txSeqs <- readTxs dir
+  putStrLn ("Loaded " ++ show (length txSeqs) ++ " transaction sequences from " ++ dir)
+  pure txSeqs
+
+-- | Every transaction sequence in the directory, with its file name.
+readTxs :: FilePath -> IO [(FilePath, [Tx])]
+readTxs dir = do
   createDirectoryIfMissing True dir
   files <- listDirectory dir
   css <- mapM (\file -> fmap (file,) <$> readCall file) <$> mapM makeRelativeToCurrentDirectory files
-  txSeqs <- catMaybes <$> withCurrentDirectory dir css
-  putStrLn ("Loaded " ++ show (length txSeqs) ++ " transaction sequences from " ++ dir)
-  pure txSeqs
+  catMaybes <$> withCurrentDirectory dir css
   where readCall f = decodeStrict <$> BS.readFile f
 
 -- Save corpus/reproducers transactions based on an event

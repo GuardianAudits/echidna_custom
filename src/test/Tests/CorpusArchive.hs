@@ -14,7 +14,7 @@ import Test.Tasty.HUnit (Assertion, assertBool, testCase, (@?=))
 
 import Echidna (loadInitialCorpus)
 import Echidna.Execution (replayCorpus)
-import Echidna.Output.Corpus (archiveSeed, defaultArchiveDir, isNamedSeed, preferNamedSeeds)
+import Echidna.Output.Corpus (archiveSeed, defaultArchiveDir, isNamedSeed, preferNamedSeeds, saveMissingTxs)
 import Echidna.Types.Campaign (WorkerState(..), initialWorkerState)
 import Echidna.Types.Campaign qualified as Campaign
 import Echidna.Types.Config (EConfig(..), Env(..))
@@ -140,6 +140,34 @@ corpusArchiveTests = testGroup "Corpus archive"
         -- The corpus saver writes a file for an event with transactions.
         [txs | WorkerEvent _ _ NewCoverage { transactions = txs } <- seen] @?= [[]]
         readCorpus c >>= (@?= [[c.set0 0]])
+
+  , testCase "saving the corpus at exit adds no copy of a seed that is on disk under another name" $
+      withArchive $ \c -> do
+        let named = [c.set0 0]
+            hexNamed = [c.set0 0, c.set1 0]
+            discovered = [c.set1 7]
+        writeSeeds c "coverage" [("seed_gap_1.txt", named), ("1b9dc0655c8a046cbbb7.txt", hexNamed)]
+        saveMissingTxs c.env (c.corpusDir </> "coverage") [named, hexNamed, discovered]
+        files <- filesIn (c.corpusDir </> "coverage")
+        length files @?= 3
+        assertBool "the seeds on disk keep their names" $
+          all (`elem` files) ["seed_gap_1.txt", "1b9dc0655c8a046cbbb7.txt"]
+        saved <- traverse (\file -> decodeFileStrict (c.corpusDir </> "coverage" </> file)) files
+        sort saved @?= sort [Just named, Just hexNamed, Just discovered]
+
+  , testCase "replaying a corpus and saving it at exit leaves the files that added coverage" $
+      withArchive $ \c -> do
+        let first = [c.set0 0]
+            longer = [c.set0 0, c.set1 0]
+        writeSeeds c "coverage"
+          [("0a.txt", first), ("0b.txt", first), ("0c.txt", longer), ("seed_x.txt", [c.set0 100])]
+        loaded <- loadInitialCorpus c.env
+        replay c loaded
+        corpus <- readCorpus c
+        saveMissingTxs c.env (c.corpusDir </> "coverage") corpus
+        -- seed_x goes first and covers what 0a would; 0b is a copy of 0a.
+        filesIn (c.corpusDir </> "coverage") >>= (@?= ["0c.txt", "seed_x.txt"])
+        length corpus @?= 2
 
   , testCase "nothing is moved when coverage is off" $
       withCampaignConfig (\cfg dir -> coverageOff (withArchiveDir cfg dir)) $ \c -> do
