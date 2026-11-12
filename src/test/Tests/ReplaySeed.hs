@@ -8,7 +8,7 @@ import Data.Aeson.KeyMap qualified as KM
 import Data.ByteString.Lazy qualified as LBS
 import Data.Either (isLeft)
 import Data.IORef (newIORef, readIORef)
-import Data.List (isSuffixOf)
+import Data.List (isSuffixOf, sort)
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.Map (Map)
 import Data.Map qualified as Map
@@ -38,13 +38,14 @@ import Echidna.MCP
   )
 import Echidna.MCP.ReplaySeed
   ( ReplaySeedArgs(..), ReplaySeedError(..), replaySeed, replaySeedDecodeTxs
-  , replaySeedErrorText, replaySeedFileName, replaySeedLcov
+  , replaySeedErrorText, replaySeedFileName, replaySeedLcov, replaySeedTestName
   )
 import Echidna.Output.Source (CoverageSnapshot(..), coverageLineHits, snapshotCoverage)
 import Echidna.Solidity (compileContracts)
 import Echidna.Types.Campaign qualified as Campaign
 import Echidna.Types.Config (EConfig(..), Env(..), InitialCorpusReplayState(..))
 import Echidna.Types.Solidity (SolConf(..))
+import Echidna.Types.Test (EchidnaTest(..), TestState(..))
 import Echidna.Types.Tx (Tx(..), TxCall(..), maxGasPerBlock)
 import Echidna.Types.Worker (CampaignEvent(..), WorkerEvent(..))
 import Echidna.Worker (subscribeEvents)
@@ -201,6 +202,64 @@ replaySeedTests = testGroup "MCP replay_seed"
             -- Empty on purpose: the corpus saver would write the transactions
             -- a second time under a hash name.
             [txs | WorkerEvent _ _ NewCoverage { transactions = txs } <- seen] @?= [[]]
+
+      , testCase "a seed that falsifies a test is answered as a break" $
+          withCampaign $ \c -> do
+            -- set0(0) clears flag0, then set1(0) clears flag1, which
+            -- echidna_sometimesfalse returns.
+            report <- expectReplayed =<< replaySeed c.env c.vm (seedArgs "gap-break" [c.set0 0, c.set1 0])
+            field "replayed" report @?= Just (Bool True)
+            field "broken" report @?= Just (Bool True)
+            falsifiedOf report @?= [("echidna_sometimesfalse", 1, True)]
+
+      , testCase "a seed that falsifies nothing is not a break" $
+          withCampaign $ \c -> do
+            report <- expectReplayed =<< replaySeed c.env c.vm (seedArgs "gap-set0" [c.set0 0])
+            field "broken" report @?= Just (Bool False)
+            falsifiedOf report @?= []
+            openTests c.env >>= (@?= ["echidna_alwaystrue", "echidna_revert_always", "echidna_sometimesfalse"])
+
+      , testCase "the break is recorded in the campaign with the seed's prefix as reproducer" $
+          withCampaign $ \c -> do
+            events <- subscribeEvents c.env
+            -- The test fails after the second transaction; the third is not
+            -- part of the reproducer.
+            report <- expectReplayed =<< replaySeed c.env c.vm (seedArgs "gap-break" [c.set0 0, c.set1 0, c.set0 1])
+            falsifiedOf report @?= [("echidna_sometimesfalse", 1, True)]
+            openTests c.env >>= (@?= ["echidna_alwaystrue", "echidna_revert_always"])
+            broken <- testNamed "echidna_sometimesfalse" c.env
+            broken.reproducer @?= [c.set0 0, c.set1 0]
+            assertBool "the test is falsified and waiting to be shrunk" $ case broken.state of
+              Large _ -> True
+              _ -> False
+            seen <- drain events
+            [replaySeedTestName t | WorkerEvent _ _ (TestFalsified t) <- seen] @?= ["echidna_sometimesfalse"]
+            [t.reproducer | WorkerEvent _ _ (TestFalsified t) <- seen] @?= [[c.set0 0, c.set1 0]]
+
+      , testCase "a break the campaign already knows is still answered, and reported once" $
+          withCampaign $ \c -> do
+            events <- subscribeEvents c.env
+            _ <- expectReplayed =<< replaySeed c.env c.vm (seedArgs "gap-break-1" [c.set0 0, c.set1 0])
+            report <- expectReplayed =<< replaySeed c.env c.vm (seedArgs "gap-break-2" [c.set0 100, c.set1 10])
+            field "broken" report @?= Just (Bool True)
+            falsifiedOf report @?= [("echidna_sometimesfalse", 1, False)]
+            -- The campaign keeps the first reproducer.
+            broken <- testNamed "echidna_sometimesfalse" c.env
+            broken.reproducer @?= [c.set0 0, c.set1 0]
+            seen <- drain events
+            length [() | WorkerEvent _ _ (TestFalsified _) <- seen] @?= 1
+
+      , testCase "a breaking seed is still saved and still reports its coverage" $
+          withCampaign $ \c -> do
+            report <- expectReplayed =<< replaySeed c.env c.vm (seedArgs "gap-break" [c.set0 0, c.set1 0])
+            doesFileExist (c.corpusDir </> "coverage" </> "gap-break.txt") >>= assertBool "saved"
+            assertBool "coverage of the seed" $ set1Assignment `elem` coveredLinesOf report
+
+      , testCase "a refused seed falsifies nothing" $
+          withCampaign $ \c -> do
+            let stray = (c.set1 0) { dst = 0xdeadbeef }
+            replaySeed c.env c.vm (seedArgs "gap-stray" [c.set0 0, c.set1 0, stray]) >>= expectInvalid
+            openTests c.env >>= (@?= ["echidna_alwaystrue", "echidna_revert_always", "echidna_sometimesfalse"])
 
       , testCase "a seed calling an address the campaign never deployed is not replayed" $
           withCampaign $ \c -> do
@@ -360,6 +419,34 @@ coveredLinesOf report = case field "coverage" report of
            | (file, Object fileLines) <- KM.toList files
            , "flags.sol" `isSuffixOf` K.toString file ]
   _ -> []
+
+-- | A report's @falsified@ entries: test, transaction index, newly falsified.
+falsifiedOf :: Value -> [(Text, Int, Bool)]
+falsifiedOf report = case field "falsified" report of
+  Just (Array entries) ->
+    [ (test, truncate index, newly)
+    | entry <- Vector.toList entries
+    , Just (String test) <- [field "test" entry]
+    , Just (Number index) <- [field "txIndex" entry]
+    , Just (Bool newly) <- [field "newlyFalsified" entry] ]
+  _ -> []
+
+-- | Names of the campaign's tests that are still open, sorted.
+openTests :: Env -> IO [Text]
+openTests env = do
+  tests <- traverse readIORef env.testRefs
+  pure $ sort [replaySeedTestName t | t <- tests, isOpen t.state]
+  where
+    isOpen = \case
+      Open -> True
+      _ -> False
+
+testNamed :: Text -> Env -> IO EchidnaTest
+testNamed name env = do
+  tests <- traverse readIORef env.testRefs
+  case filter ((== name) . replaySeedTestName) tests of
+    [test] -> pure test
+    found -> assertFailure ("expected one test named " <> T.unpack name <> ", found " <> show (length found))
 
 field :: Text -> Value -> Maybe Value
 field key = \case

@@ -15,6 +15,12 @@
 -- added to the in-memory corpus the fuzz workers mutate from. A seed that
 -- fails a check is neither replayed nor saved.
 --
+-- Every test of the campaign is evaluated after each transaction, as a fuzz
+-- worker does for its own sequences. A seed that falsifies a test is a break:
+-- the answer says so (@broken@, @falsified@), and a test that was still open
+-- is marked falsified in the campaign with the seed's prefix as its
+-- reproducer, so the break is reported, saved and shrunk like any other.
+--
 -- The replay runs on the MCP request thread, not on a fuzz worker, so it also
 -- answers while the workers are still replaying the initial corpus.
 module Echidna.MCP.ReplaySeed
@@ -26,16 +32,17 @@ module Echidna.MCP.ReplaySeed
   , replaySeedDecodeTxs
   , replaySeedLcov
   , replaySeedTimeoutUsec
+  , replaySeedTestName
   ) where
 
 import Control.Concurrent.STM (atomically, writeTChan)
 import Control.Exception (SomeException, displayException, try)
-import Control.Monad (when)
+import Control.Monad (foldM, forM, when)
 import Control.Monad.Reader (runReaderT)
 import Control.Monad.State.Strict (runStateT)
 import Data.Aeson (FromJSON(..), Result(..), Value(..), eitherDecodeStrict, encodeFile, fromJSON, object, toJSON, withObject, (.:), (.=))
 import Data.Char (isAlphaNum, isAscii)
-import Data.IORef (atomicModifyIORef', newIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (find)
 import Data.Map (Map)
 import Data.Map qualified as Map
@@ -62,6 +69,9 @@ import Echidna.Types.Campaign (CampaignConf(..))
 import Echidna.Types.Config (EConfig(..), Env(..))
 import Echidna.Types.Coverage (CovSlot, coverageStats, newCovSlot)
 import Echidna.Types.InterWorker (AgentId(..), BroadcastMsg(..), Message(..), WrappedMessage(..))
+import Echidna.Test (checkETest, compactVMForReport, getResultFromVM)
+import Echidna.Types.Test (EchidnaTest, TestState(..), TestType(..), TestValue(..))
+import Echidna.Types.Test qualified as Test
 import Echidna.Types.Tx (Tx(..), TxCall(..), TxResult, getResult)
 import Echidna.Types.Corpus (corpusSize)
 import Echidna.Types.Worker (CampaignEvent(..), WorkerEvent(..), WorkerType(..))
@@ -140,27 +150,39 @@ replaySeed env vm args =
     Left why -> pure . Left $ InvalidSeed why
     Right (fileName, txs) -> do
       (seedEnv, seedSlot) <- isolatedCoverageEnv env
-      alone <- runSeed seedEnv seedSlot vm txs
+      -- Every test is checked, whatever the campaign already knows about it:
+      -- whether this seed breaks a test does not depend on who broke it first.
+      tests <- zip env.testRefs <$> traverse readIORef env.testRefs
+      alone <- runSeed seedEnv seedSlot vm tests txs
       case alone of
         Left why -> pure . Left $ ReplayFailed why
-        Right (results, _) -> do
+        Right (results, _, breaks) -> do
           covered <- coveredLines seedEnv
           -- The slot is private to this request: campaign slots belong to
           -- their agents, and a slot must never be used from two threads.
           liveSlot <- newCovSlot (V.length env.coverageSlots)
-          live <- runSeed env liveSlot vm txs
+          live <- runSeed env liveSlot vm [] txs
           case live of
             Left why -> pure . Left $ ReplayFailed why
-            Right (_, grew) -> do
+            Right (_, grew, _) -> do
               saved <- saveSeed env fileName txs
               newSize <- addToLiveCorpus env txs
               -- The same signals a fuzz worker's own discovery gives.
               mapM_ (pushCampaignEvent env . ReproducerSaved . fst) saved
               when grew $ announceNewCoverage env newSize txs
+              falsified <- forM breaks $ \seedBreak -> do
+                newly <- reportBreak env seedBreak
+                pure $ object
+                  [ "test" .= replaySeedTestName seedBreak.test
+                  , "txIndex" .= seedBreak.txIndex
+                  , "result" .= seedBreak.result
+                  , "newlyFalsified" .= newly
+                  ]
               pushCampaignEvent env . ServerLog $
                 "Seed " <> fileName <> " replayed over MCP: "
                   <> show (length txs) <> " transaction(s), "
-                  <> (if grew then "new" else "no new") <> " campaign coverage"
+                  <> (if grew then "new" else "no new") <> " campaign coverage, "
+                  <> show (length breaks) <> " test(s) falsified"
               pure . Right $ object
                 [ "replayed" .= True
                 , "name" .= fileName
@@ -169,6 +191,8 @@ replaySeed env vm args =
                 , "transactions" .= length txs
                 , "results" .= results
                 , "newCoverage" .= grew
+                , "broken" .= not (null breaks)
+                , "falsified" .= falsified
                 , "coverage" .= covered
                 , "lcov" .= replaySeedLcov covered
                 ]
@@ -215,25 +239,92 @@ isolatedCoverageEnv env = do
     , slot
     )
 
+-- | A test the seed falsified.
+data SeedBreak = SeedBreak
+  { testRef :: IORef EchidnaTest
+    -- ^ the campaign's record of the test
+  , test :: EchidnaTest
+  , txIndex :: Int
+    -- ^ position in the seed of the transaction after which the test failed
+  , reproducer :: [Tx]
+    -- ^ the seed up to and including that transaction
+  , result :: TxResult
+  , failedVm :: VM Concrete
+    -- ^ the state the test failed in
+  }
+
 -- | Execute the sequence from the given VM, recording coverage through the
--- slot. Returns each transaction's result and whether the coverage maps of
--- the environment gained anything.
-runSeed :: Env -> CovSlot -> VM Concrete -> [Tx] -> IO (Either Text ([TxResult], Bool))
-runSeed env slot vm0 txs = do
-  outcome <- try (timeout replaySeedTimeoutUsec (runReaderT (go vm0 txs) env))
-    :: IO (Either SomeException (Maybe ([TxResult], Bool)))
+-- slot, and evaluate the given tests after every transaction, in the state a
+-- fuzz worker evaluates them in. Returns each transaction's result, whether
+-- the coverage maps of the environment gained anything, and the tests the
+-- sequence falsified, each at the first transaction that falsified it.
+runSeed
+  :: Env -> CovSlot -> VM Concrete -> [(IORef EchidnaTest, EchidnaTest)] -> [Tx]
+  -> IO (Either Text ([TxResult], Bool, [SeedBreak]))
+runSeed env slot vm0 tests0 txs = do
+  outcome <- try (timeout replaySeedTimeoutUsec (runReaderT (go vm0 tests0 [] (zip [0 ..] txs)) env))
+    :: IO (Either SomeException (Maybe ([TxResult], Bool, [SeedBreak])))
   pure $ case outcome of
     Left err -> Left . T.pack $ displayException err
     Right Nothing -> Left "replay timed out"
     Right (Just done) -> Right done
   where
-    go _ [] = pure ([], False)
-    go vm (tx : rest) = do
-      ((result, grew), vm') <- runStateT (execTxWithCov slot tx) (resetTxTransientState vm)
+    go _ _ _ [] = pure ([], False, [])
+    go vm tests executed ((index, tx) : rest) = do
+      ((vmResult, grew), vm') <- runStateT (execTxWithCov slot tx) (resetTxTransientState vm)
       -- Force the result before moving on so a failure surfaces here.
-      let !txResult = getResult result
-      (results, grewLater) <- go (clearTxBookkeeping vm') rest
-      pure (txResult : results, grew || grewLater)
+      let !txResult = getResult vmResult
+          vmAfter = clearTxBookkeeping vm'
+          executed' = tx : executed
+      (stillPassing, breaksNow) <- foldM (check vmAfter index (reverse executed')) ([], []) tests
+      (results, grewLater, breaksLater) <- go vmAfter (reverse stillPassing) executed' rest
+      pure (txResult : results, grew || grewLater, reverse breaksNow <> breaksLater)
+
+    check vmAfter index reproducer (passing, breaks) entry@(testRef, test) = do
+      (value, checkedVm) <- checkETest test vmAfter
+      pure $ case value of
+        BoolValue False ->
+          let found = SeedBreak
+                { testRef, test, txIndex = index, reproducer
+                , result = getResultFromVM checkedVm, failedVm = vmAfter }
+          in (passing, found : breaks)
+        _ -> (entry : passing, breaks)
+
+-- | Record a break in the campaign, as the worker that found it would: a test
+-- still open becomes falsified with the seed's prefix as its reproducer, and
+-- the 'TestFalsified' event is published, which reports it, saves the
+-- reproducer and hands it to worker 0 for shrinking. Returns whether the
+-- campaign learned of the break from this seed; a test already decided is
+-- left as it is.
+reportBreak :: Env -> SeedBreak -> IO Bool
+reportBreak env seedBreak = do
+  updated <- atomicModifyIORef' seedBreak.testRef $ \current ->
+    case current.state of
+      Open ->
+        let falsified = current
+              { Test.state = Large 0
+              , Test.reproducer = seedBreak.reproducer
+              , Test.vm = Just (compactVMForReport seedBreak.failedVm)
+              , Test.result = seedBreak.result
+              , Test.workerId = Just seedWorkerId
+              }
+        in (falsified, Just falsified)
+      _ -> (current, Nothing)
+  case updated of
+    Nothing -> pure False
+    Just falsified -> do
+      pushCampaignEvent env . WorkerEvent seedWorkerId FuzzWorker $
+        TestFalsified (falsified { Test.vm = Nothing })
+      pure True
+
+-- | The name a test is reported under.
+replaySeedTestName :: EchidnaTest -> Text
+replaySeedTestName test = case test.testType of
+  PropertyTest name _ -> name
+  OptimizationTest name _ -> name
+  AssertionTest _ (name, _) _ -> name
+  CallTest name _ -> name
+  Exploration -> "exploration"
 
 -- | Lines the environment's coverage maps record as executed, per source file.
 coveredLines :: Env -> IO (Map FilePath (Map Int Word64))

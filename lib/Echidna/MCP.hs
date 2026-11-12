@@ -800,7 +800,7 @@ streamableToolsList = object
       , streamableTool "get_reproducer" "Get a reproducer snapshot" streamableReproducerSchema
       , streamableTool "get_coverage_hits" "Get coverage line hits" streamableEmptyArgsSchema
       , streamableTool "get_coverage_executions" "Get per-line execution and failed-execution counts" streamableEmptyArgsSchema
-      , streamableTool "replay_seed" "Replay a named seed into the running campaign. A valid seed is replayed, saved as <corpus-dir>/coverage/<name>.txt, added to the corpus every worker mutates from, and answered with the coverage of that seed alone (line hits and LCOV). An invalid seed is not replayed or saved." streamableReplaySeedSchema
+      , streamableTool "replay_seed" "Replay a named seed into the running campaign. A valid seed is replayed, saved as <corpus-dir>/coverage/<name>.txt, added to the corpus every worker mutates from, and answered with the coverage of that seed alone (line hits and LCOV). Every test is evaluated after each transaction: a seed that falsifies one is answered with broken=true and the falsified tests, and the break is recorded in the campaign. An invalid seed is not replayed or saved." streamableReplaySeedSchema
       ]
   ]
   where
